@@ -1,0 +1,30 @@
+<assembly>
+    <id>bin</id>
+    <includeBaseDirectory>false</includeBaseDirectory>
+    <formats>
+        <format>zip</format>
+    </formats>
+    <fileSets>
+        <fileSet>
+            <directory>src/main/assembly/db</directory>
+            <outputDirectory>wrench-${project.version}/db</outputDirectory>
+        </fileSet>
+    </fileSets>
+    <files>
+        <file>
+            <source>src/main/assembly/run.sh</source>
+            <outputDirectory>wrench-${project.version}/bin</outputDirectory>
+            <fileMode>775</fileMode>
+        </file>
+        <file>
+            <source>src/main/assembly/wrench.properties</source>
+            <outputDirectory>wrench-${project.version}/conf</outputDirectory>
+        </file>
+    </files>
+    <dependencySets>
+        <dependencySet>
+            <useProjectArtifact>false</useProjectArtifact>
+            <outputDirectory>wrench-${project.version}/lib</outputDirectory>
+        </dependencySet>
+    </dependencySets>
+</assembly>
