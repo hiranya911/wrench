@@ -90,6 +90,10 @@ public class PaxosAgent {
 
     }
 
+    public boolean onLeaderQuery() {
+        return leader != null && leader.isLocal();
+    }
+
     public void onElection() {
         if (electionInProgress.compareAndSet(false, true)) {
             exec.submit(electionWorker);

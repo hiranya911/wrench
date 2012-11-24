@@ -4,7 +4,9 @@ service WrenchManagementService {
 
   bool election(),
 
-  void victory(1:string processId)
+  void victory(1:string processId),
+
+  bool isLeader()
 
 }
 

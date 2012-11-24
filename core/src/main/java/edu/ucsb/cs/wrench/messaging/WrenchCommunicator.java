@@ -56,6 +56,25 @@ public class WrenchCommunicator {
         }
     }
 
+    public synchronized boolean sendLeaderQueryMessage(Member remoteMember) {
+        TTransport transport = getTransport(remoteMember);
+        try {
+            transport.open();
+            TProtocol protocol = new TBinaryProtocol(transport);
+            WrenchManagementService.Client client = new WrenchManagementService.Client(protocol);
+            return client.isLeader();
+        } catch (TException e) {
+            String msg = "Error contacting the remote member: " + remoteMember.getProcessId();
+            log.warn(msg);
+            log.debug(msg, e);
+            return false;
+        } finally {
+            if (transport.isOpen()) {
+                transport.close();
+            }
+        }
+    }
+
     private TTransport getTransport(Member member) {
         if (!transports.containsKey(member)) {
             synchronized (this) {

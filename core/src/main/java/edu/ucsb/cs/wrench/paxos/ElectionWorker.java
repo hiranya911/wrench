@@ -17,6 +17,7 @@ public class ElectionWorker implements Runnable {
     private WrenchCommunicator communicator;
     private WrenchConfiguration config;
     private boolean victoryMessageReceived;
+    private boolean initialization = true;
 
     public ElectionWorker(WrenchCommunicator communicator) {
         this.communicator = communicator;
@@ -26,8 +27,22 @@ public class ElectionWorker implements Runnable {
     @Override
     public void run() {
         victoryMessageReceived = false;
-        log.info("Starting new leader election");
         Member[] members = config.getMembers();
+
+        if (initialization) {
+            log.info("Checking if the leader exists");
+            for (Member member : members) {
+                if (!member.isLocal() && communicator.sendLeaderQueryMessage(member)) {
+                    log.info("Found existing leader: " + member.getProcessId());
+                    communicator.sendVictoryMessage(member, config.getLocalMember());
+                    return;
+                }
+            }
+            log.info("No existing leader found");
+            initialization = false;
+        }
+
+        log.info("Starting new leader election");
         Arrays.sort(members);
 
         Set<Member> highProcesses = new HashSet<Member>();
@@ -46,7 +61,7 @@ public class ElectionWorker implements Runnable {
         } else {
             while (true) {
                 boolean higherProcessSeen = false;
-                for (Member member : members) {
+                for (Member member : highProcesses) {
                     if (communicator.sendElectionMessage(member)) {
                         higherProcessSeen = true;
                         break;

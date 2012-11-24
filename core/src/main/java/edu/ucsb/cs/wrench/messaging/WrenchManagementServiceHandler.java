@@ -26,4 +26,9 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
         Member member = config.getMember(processId);
         agent.onVictory(member);
     }
+
+    @Override
+    public boolean isLeader() throws TException {
+        return agent.onLeaderQuery();
+    }
 }
