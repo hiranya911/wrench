@@ -124,12 +124,15 @@ public class WrenchCommunicator {
         }
     }
 
-    public void sendDecide(long requestNumber, Command command) {
+    public void sendDecide(BallotNumber ballotNumber, long requestNumber, Command command) {
         WrenchConfiguration config = WrenchConfiguration.getConfiguration();
         for (Member member : config.getMembers()) {
+            if (member.isLocal()) {
+                continue;
+            }
             try {
                 WrenchManagementService.Client client = getClient(member);
-                client.decide(requestNumber, command.toString());
+                client.decide(toThriftBallotNumber(ballotNumber), requestNumber, command.toString());
             } catch (TException e) {
                 handleException(member, e);
             }

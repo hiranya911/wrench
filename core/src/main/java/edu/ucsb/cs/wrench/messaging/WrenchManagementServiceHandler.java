@@ -1,8 +1,8 @@
 package edu.ucsb.cs.wrench.messaging;
 
 import edu.ucsb.cs.wrench.commands.CommandFactory;
-import edu.ucsb.cs.wrench.config.Member;
-import edu.ucsb.cs.wrench.config.WrenchConfiguration;
+import edu.ucsb.cs.wrench.elections.ElectionEvent;
+import edu.ucsb.cs.wrench.elections.VictoryEvent;
 import edu.ucsb.cs.wrench.paxos.*;
 import org.apache.thrift.TException;
 
@@ -11,11 +11,9 @@ import java.util.Map;
 public class WrenchManagementServiceHandler implements WrenchManagementService.Iface {
 
     private PaxosAgent agent;
-    private WrenchConfiguration config;
 
     public WrenchManagementServiceHandler(PaxosAgent agent) {
         this.agent = agent;
-        this.config = WrenchConfiguration.getConfiguration();
     }
 
     @Override
@@ -25,14 +23,13 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
 
     @Override
     public boolean election() throws TException {
-        agent.onElection();
+        agent.enqueue(new ElectionEvent());
         return true;
     }
 
     @Override
     public void victory(String processId) throws TException {
-        Member member = config.getMember(processId);
-        agent.onVictory(member);
+        agent.enqueue(new VictoryEvent(processId));
     }
 
     @Override
@@ -79,8 +76,9 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
     }
 
     @Override
-    public void decide(long requestNumber, String command) throws TException {
-        DecideEvent decide = new DecideEvent(requestNumber, CommandFactory.createCommand(command));
+    public void decide(BallotNumber ballotNumber, long requestNumber, String command) throws TException {
+        DecideEvent decide = new DecideEvent(toPaxosBallotNumber(ballotNumber),
+                requestNumber, CommandFactory.createCommand(command));
         agent.enqueue(decide);
     }
 

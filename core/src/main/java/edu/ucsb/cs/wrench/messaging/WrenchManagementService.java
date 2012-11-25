@@ -50,7 +50,7 @@ public class WrenchManagementService {
 
     public void accepted(BallotNumber bal, long requestNumber) throws org.apache.thrift.TException;
 
-    public void decide(long requestNumber, String command) throws org.apache.thrift.TException;
+    public void decide(BallotNumber bal, long requestNumber, String command) throws org.apache.thrift.TException;
 
   }
 
@@ -72,7 +72,7 @@ public class WrenchManagementService {
 
     public void accepted(BallotNumber bal, long requestNumber, org.apache.thrift.async.AsyncMethodCallback<AsyncClient.accepted_call> resultHandler) throws org.apache.thrift.TException;
 
-    public void decide(long requestNumber, String command, org.apache.thrift.async.AsyncMethodCallback<AsyncClient.decide_call> resultHandler) throws org.apache.thrift.TException;
+    public void decide(BallotNumber bal, long requestNumber, String command, org.apache.thrift.async.AsyncMethodCallback<AsyncClient.decide_call> resultHandler) throws org.apache.thrift.TException;
 
   }
 
@@ -269,15 +269,16 @@ public class WrenchManagementService {
       return;
     }
 
-    public void decide(long requestNumber, String command) throws org.apache.thrift.TException
+    public void decide(BallotNumber bal, long requestNumber, String command) throws org.apache.thrift.TException
     {
-      send_decide(requestNumber, command);
+      send_decide(bal, requestNumber, command);
       recv_decide();
     }
 
-    public void send_decide(long requestNumber, String command) throws org.apache.thrift.TException
+    public void send_decide(BallotNumber bal, long requestNumber, String command) throws org.apache.thrift.TException
     {
       decide_args args = new decide_args();
+      args.setBal(bal);
       args.setRequestNumber(requestNumber);
       args.setCommand(command);
       sendBase("decide", args);
@@ -576,18 +577,20 @@ public class WrenchManagementService {
       }
     }
 
-    public void decide(long requestNumber, String command, org.apache.thrift.async.AsyncMethodCallback<decide_call> resultHandler) throws org.apache.thrift.TException {
+    public void decide(BallotNumber bal, long requestNumber, String command, org.apache.thrift.async.AsyncMethodCallback<decide_call> resultHandler) throws org.apache.thrift.TException {
       checkReady();
-      decide_call method_call = new decide_call(requestNumber, command, resultHandler, this, ___protocolFactory, ___transport);
+      decide_call method_call = new decide_call(bal, requestNumber, command, resultHandler, this, ___protocolFactory, ___transport);
       this.___currentMethod = method_call;
       ___manager.call(method_call);
     }
 
     public static class decide_call extends org.apache.thrift.async.TAsyncMethodCall {
+      private BallotNumber bal;
       private long requestNumber;
       private String command;
-      public decide_call(long requestNumber, String command, org.apache.thrift.async.AsyncMethodCallback<decide_call> resultHandler, org.apache.thrift.async.TAsyncClient client, org.apache.thrift.protocol.TProtocolFactory protocolFactory, org.apache.thrift.transport.TNonblockingTransport transport) throws org.apache.thrift.TException {
+      public decide_call(BallotNumber bal, long requestNumber, String command, org.apache.thrift.async.AsyncMethodCallback<decide_call> resultHandler, org.apache.thrift.async.TAsyncClient client, org.apache.thrift.protocol.TProtocolFactory protocolFactory, org.apache.thrift.transport.TNonblockingTransport transport) throws org.apache.thrift.TException {
         super(client, protocolFactory, transport, resultHandler, false);
+        this.bal = bal;
         this.requestNumber = requestNumber;
         this.command = command;
       }
@@ -595,6 +598,7 @@ public class WrenchManagementService {
       public void write_args(org.apache.thrift.protocol.TProtocol prot) throws org.apache.thrift.TException {
         prot.writeMessageBegin(new org.apache.thrift.protocol.TMessage("decide", org.apache.thrift.protocol.TMessageType.CALL, 0));
         decide_args args = new decide_args();
+        args.setBal(bal);
         args.setRequestNumber(requestNumber);
         args.setCommand(command);
         args.write(prot);
@@ -814,7 +818,7 @@ public class WrenchManagementService {
 
       public decide_result getResult(I iface, decide_args args) throws org.apache.thrift.TException {
         decide_result result = new decide_result();
-        iface.decide(args.requestNumber, args.command);
+        iface.decide(args.bal, args.requestNumber, args.command);
         return result;
       }
     }
@@ -6529,8 +6533,9 @@ public class WrenchManagementService {
   public static class decide_args implements org.apache.thrift.TBase<decide_args, decide_args._Fields>, java.io.Serializable, Cloneable   {
     private static final org.apache.thrift.protocol.TStruct STRUCT_DESC = new org.apache.thrift.protocol.TStruct("decide_args");
 
-    private static final org.apache.thrift.protocol.TField REQUEST_NUMBER_FIELD_DESC = new org.apache.thrift.protocol.TField("requestNumber", org.apache.thrift.protocol.TType.I64, (short)1);
-    private static final org.apache.thrift.protocol.TField COMMAND_FIELD_DESC = new org.apache.thrift.protocol.TField("command", org.apache.thrift.protocol.TType.STRING, (short)2);
+    private static final org.apache.thrift.protocol.TField BAL_FIELD_DESC = new org.apache.thrift.protocol.TField("bal", org.apache.thrift.protocol.TType.STRUCT, (short)1);
+    private static final org.apache.thrift.protocol.TField REQUEST_NUMBER_FIELD_DESC = new org.apache.thrift.protocol.TField("requestNumber", org.apache.thrift.protocol.TType.I64, (short)2);
+    private static final org.apache.thrift.protocol.TField COMMAND_FIELD_DESC = new org.apache.thrift.protocol.TField("command", org.apache.thrift.protocol.TType.STRING, (short)3);
 
     private static final Map<Class<? extends IScheme>, SchemeFactory> schemes = new HashMap<Class<? extends IScheme>, SchemeFactory>();
     static {
@@ -6538,13 +6543,15 @@ public class WrenchManagementService {
       schemes.put(TupleScheme.class, new decide_argsTupleSchemeFactory());
     }
 
+    public BallotNumber bal; // required
     public long requestNumber; // required
     public String command; // required
 
     /** The set of fields this struct contains, along with convenience methods for finding and manipulating them. */
     public enum _Fields implements org.apache.thrift.TFieldIdEnum {
-      REQUEST_NUMBER((short)1, "requestNumber"),
-      COMMAND((short)2, "command");
+      BAL((short)1, "bal"),
+      REQUEST_NUMBER((short)2, "requestNumber"),
+      COMMAND((short)3, "command");
 
       private static final Map<String, _Fields> byName = new HashMap<String, _Fields>();
 
@@ -6559,9 +6566,11 @@ public class WrenchManagementService {
        */
       public static _Fields findByThriftId(int fieldId) {
         switch(fieldId) {
-          case 1: // REQUEST_NUMBER
+          case 1: // BAL
+            return BAL;
+          case 2: // REQUEST_NUMBER
             return REQUEST_NUMBER;
-          case 2: // COMMAND
+          case 3: // COMMAND
             return COMMAND;
           default:
             return null;
@@ -6608,6 +6617,8 @@ public class WrenchManagementService {
     public static final Map<_Fields, org.apache.thrift.meta_data.FieldMetaData> metaDataMap;
     static {
       Map<_Fields, org.apache.thrift.meta_data.FieldMetaData> tmpMap = new EnumMap<_Fields, org.apache.thrift.meta_data.FieldMetaData>(_Fields.class);
+      tmpMap.put(_Fields.BAL, new org.apache.thrift.meta_data.FieldMetaData("bal", org.apache.thrift.TFieldRequirementType.DEFAULT, 
+          new org.apache.thrift.meta_data.StructMetaData(org.apache.thrift.protocol.TType.STRUCT, BallotNumber.class)));
       tmpMap.put(_Fields.REQUEST_NUMBER, new org.apache.thrift.meta_data.FieldMetaData("requestNumber", org.apache.thrift.TFieldRequirementType.DEFAULT, 
           new org.apache.thrift.meta_data.FieldValueMetaData(org.apache.thrift.protocol.TType.I64)));
       tmpMap.put(_Fields.COMMAND, new org.apache.thrift.meta_data.FieldMetaData("command", org.apache.thrift.TFieldRequirementType.DEFAULT, 
@@ -6620,10 +6631,12 @@ public class WrenchManagementService {
     }
 
     public decide_args(
+      BallotNumber bal,
       long requestNumber,
       String command)
     {
       this();
+      this.bal = bal;
       this.requestNumber = requestNumber;
       setRequestNumberIsSet(true);
       this.command = command;
@@ -6634,6 +6647,9 @@ public class WrenchManagementService {
      */
     public decide_args(decide_args other) {
       __isset_bitfield = other.__isset_bitfield;
+      if (other.isSetBal()) {
+        this.bal = new BallotNumber(other.bal);
+      }
       this.requestNumber = other.requestNumber;
       if (other.isSetCommand()) {
         this.command = other.command;
@@ -6646,9 +6662,34 @@ public class WrenchManagementService {
 
     @Override
     public void clear() {
+      this.bal = null;
       setRequestNumberIsSet(false);
       this.requestNumber = 0;
       this.command = null;
+    }
+
+    public BallotNumber getBal() {
+      return this.bal;
+    }
+
+    public decide_args setBal(BallotNumber bal) {
+      this.bal = bal;
+      return this;
+    }
+
+    public void unsetBal() {
+      this.bal = null;
+    }
+
+    /** Returns true if field bal is set (has been assigned a value) and false otherwise */
+    public boolean isSetBal() {
+      return this.bal != null;
+    }
+
+    public void setBalIsSet(boolean value) {
+      if (!value) {
+        this.bal = null;
+      }
     }
 
     public long getRequestNumber() {
@@ -6700,6 +6741,14 @@ public class WrenchManagementService {
 
     public void setFieldValue(_Fields field, Object value) {
       switch (field) {
+      case BAL:
+        if (value == null) {
+          unsetBal();
+        } else {
+          setBal((BallotNumber)value);
+        }
+        break;
+
       case REQUEST_NUMBER:
         if (value == null) {
           unsetRequestNumber();
@@ -6721,6 +6770,9 @@ public class WrenchManagementService {
 
     public Object getFieldValue(_Fields field) {
       switch (field) {
+      case BAL:
+        return getBal();
+
       case REQUEST_NUMBER:
         return Long.valueOf(getRequestNumber());
 
@@ -6738,6 +6790,8 @@ public class WrenchManagementService {
       }
 
       switch (field) {
+      case BAL:
+        return isSetBal();
       case REQUEST_NUMBER:
         return isSetRequestNumber();
       case COMMAND:
@@ -6758,6 +6812,15 @@ public class WrenchManagementService {
     public boolean equals(decide_args that) {
       if (that == null)
         return false;
+
+      boolean this_present_bal = true && this.isSetBal();
+      boolean that_present_bal = true && that.isSetBal();
+      if (this_present_bal || that_present_bal) {
+        if (!(this_present_bal && that_present_bal))
+          return false;
+        if (!this.bal.equals(that.bal))
+          return false;
+      }
 
       boolean this_present_requestNumber = true;
       boolean that_present_requestNumber = true;
@@ -6793,6 +6856,16 @@ public class WrenchManagementService {
       int lastComparison = 0;
       decide_args typedOther = (decide_args)other;
 
+      lastComparison = Boolean.valueOf(isSetBal()).compareTo(typedOther.isSetBal());
+      if (lastComparison != 0) {
+        return lastComparison;
+      }
+      if (isSetBal()) {
+        lastComparison = org.apache.thrift.TBaseHelper.compareTo(this.bal, typedOther.bal);
+        if (lastComparison != 0) {
+          return lastComparison;
+        }
+      }
       lastComparison = Boolean.valueOf(isSetRequestNumber()).compareTo(typedOther.isSetRequestNumber());
       if (lastComparison != 0) {
         return lastComparison;
@@ -6833,6 +6906,14 @@ public class WrenchManagementService {
       StringBuilder sb = new StringBuilder("decide_args(");
       boolean first = true;
 
+      sb.append("bal:");
+      if (this.bal == null) {
+        sb.append("null");
+      } else {
+        sb.append(this.bal);
+      }
+      first = false;
+      if (!first) sb.append(", ");
       sb.append("requestNumber:");
       sb.append(this.requestNumber);
       first = false;
@@ -6851,6 +6932,9 @@ public class WrenchManagementService {
     public void validate() throws org.apache.thrift.TException {
       // check for required fields
       // check for sub-struct validity
+      if (bal != null) {
+        bal.validate();
+      }
     }
 
     private void writeObject(java.io.ObjectOutputStream out) throws java.io.IOException {
@@ -6889,7 +6973,16 @@ public class WrenchManagementService {
             break;
           }
           switch (schemeField.id) {
-            case 1: // REQUEST_NUMBER
+            case 1: // BAL
+              if (schemeField.type == org.apache.thrift.protocol.TType.STRUCT) {
+                struct.bal = new BallotNumber();
+                struct.bal.read(iprot);
+                struct.setBalIsSet(true);
+              } else { 
+                org.apache.thrift.protocol.TProtocolUtil.skip(iprot, schemeField.type);
+              }
+              break;
+            case 2: // REQUEST_NUMBER
               if (schemeField.type == org.apache.thrift.protocol.TType.I64) {
                 struct.requestNumber = iprot.readI64();
                 struct.setRequestNumberIsSet(true);
@@ -6897,7 +6990,7 @@ public class WrenchManagementService {
                 org.apache.thrift.protocol.TProtocolUtil.skip(iprot, schemeField.type);
               }
               break;
-            case 2: // COMMAND
+            case 3: // COMMAND
               if (schemeField.type == org.apache.thrift.protocol.TType.STRING) {
                 struct.command = iprot.readString();
                 struct.setCommandIsSet(true);
@@ -6920,6 +7013,11 @@ public class WrenchManagementService {
         struct.validate();
 
         oprot.writeStructBegin(STRUCT_DESC);
+        if (struct.bal != null) {
+          oprot.writeFieldBegin(BAL_FIELD_DESC);
+          struct.bal.write(oprot);
+          oprot.writeFieldEnd();
+        }
         oprot.writeFieldBegin(REQUEST_NUMBER_FIELD_DESC);
         oprot.writeI64(struct.requestNumber);
         oprot.writeFieldEnd();
@@ -6946,13 +7044,19 @@ public class WrenchManagementService {
       public void write(org.apache.thrift.protocol.TProtocol prot, decide_args struct) throws org.apache.thrift.TException {
         TTupleProtocol oprot = (TTupleProtocol) prot;
         BitSet optionals = new BitSet();
-        if (struct.isSetRequestNumber()) {
+        if (struct.isSetBal()) {
           optionals.set(0);
         }
-        if (struct.isSetCommand()) {
+        if (struct.isSetRequestNumber()) {
           optionals.set(1);
         }
-        oprot.writeBitSet(optionals, 2);
+        if (struct.isSetCommand()) {
+          optionals.set(2);
+        }
+        oprot.writeBitSet(optionals, 3);
+        if (struct.isSetBal()) {
+          struct.bal.write(oprot);
+        }
         if (struct.isSetRequestNumber()) {
           oprot.writeI64(struct.requestNumber);
         }
@@ -6964,12 +7068,17 @@ public class WrenchManagementService {
       @Override
       public void read(org.apache.thrift.protocol.TProtocol prot, decide_args struct) throws org.apache.thrift.TException {
         TTupleProtocol iprot = (TTupleProtocol) prot;
-        BitSet incoming = iprot.readBitSet(2);
+        BitSet incoming = iprot.readBitSet(3);
         if (incoming.get(0)) {
+          struct.bal = new BallotNumber();
+          struct.bal.read(iprot);
+          struct.setBalIsSet(true);
+        }
+        if (incoming.get(1)) {
           struct.requestNumber = iprot.readI64();
           struct.setRequestNumberIsSet(true);
         }
-        if (incoming.get(1)) {
+        if (incoming.get(2)) {
           struct.command = iprot.readString();
           struct.setCommandIsSet(true);
         }

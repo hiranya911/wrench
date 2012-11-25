@@ -1,4 +1,4 @@
-package edu.ucsb.cs.wrench.paxos;
+package edu.ucsb.cs.wrench.elections;
 
 import edu.ucsb.cs.wrench.config.Member;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
@@ -10,24 +10,22 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
-public class ElectionWorker implements Runnable {
+public class ElectionCommissioner {
 
-    private static final Log log = LogFactory.getLog(ElectionWorker.class);
+    private static final Log log = LogFactory.getLog(ElectionCommissioner.class);
 
     private WrenchCommunicator communicator;
     private WrenchConfiguration config;
-    private boolean victoryMessageReceived;
+    private Member winner;
 
-    public ElectionWorker(WrenchCommunicator communicator) {
+    public ElectionCommissioner(WrenchCommunicator communicator) {
         this.communicator = communicator;
         this.config = WrenchConfiguration.getConfiguration();
     }
 
-    @Override
-    public void run() {
-        log.info("Starting new leader election");
+    public Member electLeader() {
         Member[] members = config.getMembers();
-        victoryMessageReceived = false;
+        winner = null;
         Arrays.sort(members);
 
         Set<Member> highProcesses = new HashSet<Member>();
@@ -42,11 +40,20 @@ public class ElectionWorker implements Runnable {
 
         if (highProcesses.isEmpty()) {
             waitForMajority();
+            if (winner != null) {
+                return winner;
+            }
             log.info("I'm the highest process of all - I Win");
             sendVictoryNotification(localMember);
+            return localMember;
         } else {
             while (true) {
                 waitForMajority();
+                if (winner != null) {
+                    return winner;
+                }
+
+                log.info("Starting new leader election");
                 boolean higherProcessSeen = false;
                 for (Member member : highProcesses) {
                     if (communicator.sendElectionMessage(member)) {
@@ -58,31 +65,31 @@ public class ElectionWorker implements Runnable {
                 if (higherProcessSeen) {
                     log.info("Some higher process seen - Waiting for the victory notification");
                     synchronized (this) {
-                        try {
-                            this.wait(config.getLeaderElectionTimeout());
-                        } catch (InterruptedException e) {
-                            log.error("Unexpected interrupt", e);
+                        if (winner == null) {
+                            try {
+                                this.wait(config.getLeaderElectionTimeout());
+                            } catch (InterruptedException e) {
+                                log.error("Unexpected interrupt", e);
+                            }
                         }
                     }
 
-                    if (!victoryMessageReceived) {
-                        log.info("No victory notification received - Retrying...");
+                    if (winner == null) {
+                        log.info("Winner didn't notify in time - Retrying...");
                     } else {
                         log.info("Victory message received - This election is done and dusted");
-                        break;
+                        return winner;
                     }
                 } else {
                     log.info("I'm the highest process alive - I win");
                     sendVictoryNotification(localMember);
-                    break;
+                    return localMember;
                 }
             }
         }
     }
 
     public Member discoverLeader() {
-        waitForMajority();
-
         log.info("Checking if a leader exists");
         for (Member member : config.getMembers()) {
             if (!member.isLocal() && communicator.sendLeaderQueryMessage(member)) {
@@ -93,9 +100,9 @@ public class ElectionWorker implements Runnable {
         return null;
     }
 
-    public void setVictoryMessageReceived(boolean victoryMessageReceived) {
-        this.victoryMessageReceived = victoryMessageReceived;
+    public void setWinner(Member winner) {
         synchronized (this) {
+            this.winner = winner;
             this.notifyAll();
         }
     }
@@ -126,9 +133,14 @@ public class ElectionWorker implements Runnable {
                 break;
             } else {
                 log.info("Majority of members are unreachable - Waiting for more members...");
-                try {
-                    Thread.sleep(5000);
-                } catch (InterruptedException ignored) {
+                synchronized (this) {
+                    try {
+                        this.wait(5000);
+                    } catch (InterruptedException ignored) {
+                    }
+                }
+                if (winner != null) {
+                    return;
                 }
             }
         }

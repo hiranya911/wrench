@@ -23,6 +23,6 @@ service WrenchManagementService {
 
   void accepted(1:BallotNumber bal, 2:i64 requestNumber),
 
-  void decide(1:i64 requestNumber, 2:string command)
+  void decide(1:BallotNumber bal, 2:i64 requestNumber, 3:string command)
 }
 
