@@ -17,7 +17,6 @@ public class ElectionWorker implements Runnable {
     private WrenchCommunicator communicator;
     private WrenchConfiguration config;
     private boolean victoryMessageReceived;
-    private boolean initialization = true;
 
     public ElectionWorker(WrenchCommunicator communicator) {
         this.communicator = communicator;
@@ -26,23 +25,9 @@ public class ElectionWorker implements Runnable {
 
     @Override
     public void run() {
-        victoryMessageReceived = false;
-        Member[] members = config.getMembers();
-
-        if (initialization) {
-            log.info("Checking if the leader exists");
-            for (Member member : members) {
-                if (!member.isLocal() && communicator.sendLeaderQueryMessage(member)) {
-                    log.info("Found existing leader: " + member.getProcessId());
-                    communicator.sendVictoryMessage(member, config.getLocalMember());
-                    return;
-                }
-            }
-            log.info("No existing leader found");
-            initialization = false;
-        }
-
         log.info("Starting new leader election");
+        Member[] members = config.getMembers();
+        victoryMessageReceived = false;
         Arrays.sort(members);
 
         Set<Member> highProcesses = new HashSet<Member>();
@@ -56,10 +41,12 @@ public class ElectionWorker implements Runnable {
         }
 
         if (highProcesses.isEmpty()) {
+            waitForMajority();
             log.info("I'm the highest process of all - I Win");
             sendVictoryNotification(localMember);
         } else {
             while (true) {
+                waitForMajority();
                 boolean higherProcessSeen = false;
                 for (Member member : highProcesses) {
                     if (communicator.sendElectionMessage(member)) {
@@ -93,6 +80,19 @@ public class ElectionWorker implements Runnable {
         }
     }
 
+    public Member discoverLeader() {
+        waitForMajority();
+
+        log.info("Checking if a leader exists");
+        for (Member member : config.getMembers()) {
+            if (!member.isLocal() && communicator.sendLeaderQueryMessage(member)) {
+                log.info("Found existing leader: " + member.getProcessId());
+                return member;
+            }
+        }
+        return null;
+    }
+
     public void setVictoryMessageReceived(boolean victoryMessageReceived) {
         this.victoryMessageReceived = victoryMessageReceived;
         synchronized (this) {
@@ -104,6 +104,32 @@ public class ElectionWorker implements Runnable {
         for (Member member : config.getMembers()) {
             if (member.compareTo(localMember) <= 0) {
                 communicator.sendVictoryMessage(localMember, member);
+            }
+        }
+    }
+
+    private void waitForMajority() {
+        Member[] members = config.getMembers();
+        while (true) {
+            int liveNodes = 1;
+            log.info("Checking if a majority of members are up");
+            for (Member member : members) {
+                if (member.isLocal()) {
+                    continue;
+                }
+                if (communicator.ping(member)) {
+                    liveNodes++;
+                }
+            }
+            if (liveNodes > members.length / 2.0) {
+                log.info("Majority is up");
+                break;
+            } else {
+                log.info("Majority of members are unreachable - Waiting for more members...");
+                try {
+                    Thread.sleep(5000);
+                } catch (InterruptedException ignored) {
+                }
             }
         }
     }

@@ -17,12 +17,23 @@ public class BallotNumber implements Comparable<BallotNumber> {
         this.processId = segments[1];
     }
 
+    public long getNumber() {
+        return number;
+    }
+
+    public String getProcessId() {
+        return processId;
+    }
+
     public void increment() {
         this.number++;
     }
 
     @Override
     public int compareTo(BallotNumber o) {
+        if (o == null) {
+            return 1;
+        }
         int diff = (int) (number - o.number);
         if (diff != 0) {
             return diff;

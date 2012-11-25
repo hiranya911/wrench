@@ -11,8 +11,10 @@ import org.apache.commons.logging.LogFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.ListIterator;
+import java.util.Map;
 
 public class PaxosLedger {
 
@@ -138,6 +140,39 @@ public class PaxosLedger {
         return prev;
     }
 
+    public Map<Long,BallotNumber> getPreviousBallotNumbers(long requestNumber) {
+        Map<Long,BallotNumber> prevBallots = new HashMap<Long, BallotNumber>();
+        for (long i = requestNumber; i <= getLastExecutedRequest(); i++) {
+            BallotNumber prevBal = getPreviousBallotNumber(i);
+            if (prevBal != null) {
+                prevBallots.put(i, prevBal);
+            }
+        }
+        return prevBallots;
+    }
+
+    public Map<Long,Command> getPreviousCommands(long requestNumber) {
+        Map<Long,Command> prevCommands = new HashMap<Long,Command>();
+        for (long i = requestNumber; i <= getLastExecutedRequest(); i++) {
+            Command prevCmd = getPreviousCommand(i);
+            if (prevCmd != null) {
+                prevCommands.put(i, prevCmd);
+            }
+        }
+        return prevCommands;
+    }
+
+    public Map<Long,Command> getPreviousOutcomes(long requestNumber) {
+        Map<Long,Command> prevCommands = new HashMap<Long,Command>();
+        for (long i = requestNumber; i <= getLastExecutedRequest(); i++) {
+            Command prevCmd = getOutcome(i);
+            if (prevCmd != null) {
+                prevCommands.put(i, prevCmd);
+            }
+        }
+        return prevCommands;
+    }
+
     public Command getOutcome(long requestNumber) {
         Command o = outcome.get(requestNumber);
         if (o != null) {
@@ -184,7 +219,7 @@ public class PaxosLedger {
 
     private void append(String msg) {
         try {
-            FileUtils.writeStringToFile(ledgerFile, msg, true);
+            FileUtils.writeStringToFile(ledgerFile, msg + "\n", true);
         } catch (IOException e) {
             handleException("Error writing to the file system", e);
         }

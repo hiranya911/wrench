@@ -34,4 +34,14 @@ public class TxPrepareCommand extends Command {
     public String toString() {
         return TX_PREPARE + transactionId + " " + data;
     }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof TxPrepareCommand) {
+            TxPrepareCommand prep = (TxPrepareCommand) obj;
+            return prep.transactionId.equals(transactionId) &&
+                    prep.data.equals(data);
+        }
+        return false;
+    }
 }

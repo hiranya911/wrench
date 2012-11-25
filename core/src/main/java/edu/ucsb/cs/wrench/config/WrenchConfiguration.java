@@ -24,7 +24,7 @@ public class WrenchConfiguration {
 
     private String wrenchHome;
 
-    public WrenchConfiguration(Properties properties) {
+    private WrenchConfiguration(Properties properties) {
         this.properties = properties;
         this.wrenchHome = System.getProperty("wrench.home", System.getProperty("user.dir"));
         Map<String,Member> membership = new HashMap<String, Member>();
