@@ -43,6 +43,15 @@ public class BallotNumber implements Comparable<BallotNumber> {
     }
 
     @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof BallotNumber) {
+            BallotNumber bal = (BallotNumber) obj;
+            return bal.number == number && bal.processId.equals(processId);
+        }
+        return false;
+    }
+
+    @Override
     public String toString() {
         return "[" + number + ":" + processId + "]";
     }

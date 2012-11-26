@@ -5,9 +5,6 @@ import edu.ucsb.cs.wrench.commands.Command;
 import edu.ucsb.cs.wrench.config.Member;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.elections.ElectionCommissioner;
-import edu.ucsb.cs.wrench.elections.ElectionEvent;
-import edu.ucsb.cs.wrench.elections.VictoryEvent;
-import edu.ucsb.cs.wrench.messaging.Event;
 import edu.ucsb.cs.wrench.messaging.WrenchCommunicator;
 import edu.ucsb.cs.wrench.messaging.WrenchManagementService;
 import edu.ucsb.cs.wrench.messaging.WrenchManagementServiceHandler;
@@ -32,18 +29,9 @@ public class PaxosAgent {
 
     private static final Log log = LogFactory.getLog(PaxosAgent.class);
 
-    private static final int COLD_START             = 0;
-    private static final int LEADER_DISCOVERY       = 1;
-    private static final int LEADER_ELECTION        = 2;
-    private static final int LEADER_RECOVERY_MODE   = 3;
-    private static final int LEADER_NORMAL_MODE     = 4;
-    private static final int COHORT                 = 5;
-
     private PaxosLedger ledger;
     private Member leader;
     private TServer server;
-
-    private int status = COLD_START;
 
     private ExecutorService exec = Executors.newFixedThreadPool(5);
     private WrenchCommunicator communicator = new WrenchCommunicator();
@@ -52,16 +40,18 @@ public class PaxosAgent {
     private AtomicBoolean electionInProgress = new AtomicBoolean(false);
     private Set<AckEvent> ackStore = new HashSet<AckEvent>();
     private Map<Long,AtomicInteger> acceptCount = new HashMap<Long, AtomicInteger>();
-    private Map<Long,Command> commands = new HashMap<Long, Command>();
 
-    private Future thriftFuture;
-    private Future paxosFuture;
+    private Future thriftTask;
+    private Future paxosTask;
 
     private final Object prepareLock = new Object();
     private final Object acceptLock = new Object();
     private final Object electionLock = new Object();
 
-    private final Queue<Event> eventQueue = new ConcurrentLinkedQueue<Event>();
+    private final Queue<PaxosEvent> eventQueue = new ConcurrentLinkedQueue<PaxosEvent>();
+
+    private PaxosWorker paxosWorker = new PaxosWorker();
+    private PaxosProtocolState protocolState = PaxosProtocolState.IDLE;
 
     public void start() {
         try {
@@ -70,17 +60,15 @@ public class PaxosAgent {
             handleException("Error while initializing Paxos ledger", e);
         }
 
-        final WrenchManagementServiceHandler handler = new WrenchManagementServiceHandler(this);
+        WrenchManagementServiceHandler handler = new WrenchManagementServiceHandler(this);
         WrenchManagementService.Processor<WrenchManagementServiceHandler> processor =
                 new WrenchManagementService.Processor<WrenchManagementServiceHandler>(handler);
         int port = config.getServerPort();
-
         try {
             TServerTransport serverTransport = new TServerSocket(port);
             server = new TThreadPoolServer(new TThreadPoolServer.
                     Args(serverTransport).processor(processor));
-            paxosFuture = exec.submit(new PaxosWorker());
-            thriftFuture = exec.submit(new Runnable() {
+            thriftTask = exec.submit(new Runnable() {
                 @Override
                 public void run() {
                     server.serve();
@@ -91,80 +79,78 @@ public class PaxosAgent {
             handleException("Error while starting Wrench management service", e);
         }
 
-        updateStatus(COLD_START, LEADER_DISCOVERY);
-        Member existingLeader = electionCommissioner.discoverLeader();
-        if (existingLeader != null) {
-            leader = existingLeader;
-            updateStatus(LEADER_DISCOVERY, COHORT);
-            startProcessingClientRequests();
-            return;
-        }
-
-        updateStatus(LEADER_DISCOVERY, LEADER_ELECTION);
-        onElection();
-        while (leader == null) {
-            synchronized (electionLock) {
-                try {
-                    electionLock.wait(100);
-                } catch (InterruptedException ignored) {
+        synchronized (electionLock) {
+            leader = electionCommissioner.discoverLeader();
+            if (leader != null) {
+                log.info("Discovered existing leader: " + leader.getProcessId());
+            } else {
+                startElection();
+                while (leader == null) {
+                    try {
+                        electionLock.wait();
+                    } catch (InterruptedException ignored) {
+                    }
                 }
             }
         }
 
+        paxosTask = exec.submit(paxosWorker);
         if (leader.isLocal()) {
-            startPaxosPreparationPhase();
-        } else {
-            updateStatus(LEADER_ELECTION, COHORT);
+            runPreparePhase();
         }
-        startProcessingClientRequests();
     }
 
-    public void startProcessingClientRequests() {
-
+    public void enqueue(PaxosEvent event) {
+        synchronized (eventQueue) {
+            eventQueue.offer(event);
+            eventQueue.notifyAll();
+        }
     }
 
     public void stop() {
-        thriftFuture.cancel(true);
-        paxosFuture.cancel(true);
-        exec.shutdownNow();
-    }
-
-    public void enqueue(Event event) {
-        synchronized (eventQueue) {
-            eventQueue.offer(event);
-            eventQueue.notify();
+        thriftTask.cancel(true);
+        System.out.println("Stopped the Thrift service");
+        paxosWorker.stop();
+        while (paxosTask != null && !paxosTask.isDone()) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException ignored) {
+            }
         }
+        System.out.println("Stopped Paxos task");
+        exec.shutdownNow();
+        System.out.println("Program terminated");
     }
 
     private void onPrepare(PrepareEvent prepare) {
         BallotNumber ballotNumber = prepare.getBallotNumber();
         long requestNumber = prepare.getRequestNumber();
-        BallotNumber nextBallotNumber = ledger.getNextBallotNumber(requestNumber);
-        if (ballotNumber.compareTo(nextBallotNumber) > 0) {
-            log.info("Received new and higher ballot number: " + ballotNumber);
+        if (ballotNumber.compareTo(ledger.getNextBallotNumber(requestNumber)) >= 0) {
+            log.info("Received PREPARE with new and higher ballot number: " + ballotNumber);
             ledger.logNextBallotNumber(requestNumber, ballotNumber);
-            AckEvent ack = new AckEvent(ballotNumber, ledger.getPreviousBallotNumbers(requestNumber),
+            AckEvent ack = new AckEvent(ballotNumber,
+                    ledger.getPreviousBallotNumbers(requestNumber),
                     ledger.getPreviousCommands(requestNumber),
                     ledger.getPreviousOutcomes(requestNumber));
-            if (ballotNumber.getProcessId().equals(config.getLocalMember().getProcessId())) {
+            Member sender = config.getMember(ballotNumber.getProcessId());
+            log.info("Sending ACK to: " + ballotNumber.getProcessId());
+            if (sender.isLocal()) {
                 onAck(ack);
             } else {
-                communicator.sendAck(ack, WrenchConfiguration.getConfiguration().getMember(
-                        ballotNumber.getProcessId()));
+                communicator.sendAck(ack, sender);
             }
-            log.info("ACK sent to: " + ballotNumber.getProcessId());
         } else {
-            log.info("Received smaller ballot number: " + ballotNumber + " - Ignoring");
+            log.info("Received PREPARE with smaller ballot number: " + ballotNumber + " - Ignoring");
         }
     }
 
-    private synchronized void onAck(AckEvent ack) {
-        if (status != LEADER_RECOVERY_MODE || !leader.isLocal()) {
-            log.info("Delayed or invalid ack - Ignoring");
-        } else {
-            ackStore.add(ack);
-            if (ackStore.size() > config.getMembers().length/2.0) {
-                synchronized (prepareLock) {
+    private void onAck(AckEvent ack) {
+        synchronized (prepareLock) {
+            if (ack.getBallotNumber().equals(ledger.getLastTriedBallotNumber()) &&
+                    protocolState == PaxosProtocolState.TRYING) {
+                log.info("Received ACK with ballot number: " + ack.getBallotNumber());
+                ackStore.add(ack);
+                if (config.isMajority(ackStore.size())) {
                     prepareLock.notifyAll();
                 }
             }
@@ -175,137 +161,94 @@ public class PaxosAgent {
         BallotNumber ballotNumber = accept.getBallotNumber();
         long requestNumber = accept.getRequestNumber();
         Command command = accept.getCommand();
-        if (ballotNumber.compareTo(ledger.getNextBallotNumber(requestNumber)) == 0) {
-            log.info("Accepting proposal with ballot number: " + ballotNumber);
-            log.info("Accepted value: " + command);
+        if (ballotNumber.equals(ledger.getNextBallotNumber(requestNumber)) &&
+                ballotNumber.compareTo(ledger.getPreviousBallotNumber(requestNumber)) > 0) {
+            log.info("Received ACCEPT with the expected ballot: " + ballotNumber);
             ledger.logAcceptance(requestNumber, ballotNumber, command);
-            if (ballotNumber.getProcessId().equals(config.getLocalMember().getProcessId())) {
-                onAccepted(new AcceptedEvent(ballotNumber, requestNumber));
+            log.info("Accepted request " + requestNumber + " with value: " + command);
+            Member sender = config.getMember(ballotNumber.getProcessId());
+            log.info("Sending ACCEPTED to: " + sender.getProcessId());
+            AcceptedEvent accepted = new AcceptedEvent(ballotNumber, requestNumber);
+            if (sender.isLocal()) {
+                onAccepted(accepted);
             } else {
-                communicator.sendAccepted(ballotNumber, requestNumber,
-                        config.getMember(ballotNumber.getProcessId()));
+                communicator.sendAccepted(accepted, sender);
             }
-            log.info("Sent back ACCEPTED for: " + requestNumber);
+        } else {
+            log.info("Received ACCEPT with unexpected ballot number: " + ballotNumber + " - Ignoring");
         }
     }
 
     private void onAccepted(AcceptedEvent accepted) {
-        BallotNumber ballotNumber = accepted.getBallotNumber();
-        long requestNumber = accepted.getRequestNumber();
-        if (ballotNumber.compareTo(ledger.getLastTriedBallotNumber()) == 0 &&
-                acceptCount.containsKey(requestNumber)) {
-            int count = acceptCount.get(requestNumber).incrementAndGet();
-            if (count > config.getMembers().length / 2.0) {
-                log.info("Received ACCEPTED for: " + requestNumber + " from majority");
-                onDecide(new DecideEvent(ballotNumber, requestNumber,
-                        commands.get(requestNumber)), true);
-                commands.remove(requestNumber);
-                synchronized (acceptLock) {
+        synchronized (acceptLock) {
+            BallotNumber ballotNumber = accepted.getBallotNumber();
+            long requestNumber = accepted.getRequestNumber();
+            if (ballotNumber.equals(ledger.getLastTriedBallotNumber()) &&
+                    protocolState == PaxosProtocolState.POLLING) {
+                log.info("Received ACCEPTED for request: " + requestNumber);
+                int votes = acceptCount.get(requestNumber).incrementAndGet();
+                if (config.isMajority(votes)) {
                     acceptLock.notifyAll();
                 }
             }
         }
     }
 
-    private void onDecide(DecideEvent decide, boolean advertise) {
-        BallotNumber ballotNumber = decide.getBallotNumber();
+    private void onDecide(DecideEvent decide) {
         long requestNumber = decide.getRequestNumber();
         Command command = decide.getCommand();
-        log.info("Deciding the outcome of " + requestNumber + " as: " + command);
-        ledger.logOutcome(requestNumber, command);
-        if (leader.isLocal() && advertise) {
-            communicator.sendDecide(ballotNumber, requestNumber, command);
-            log.info("Sent DECIDE for: " + requestNumber);
+        if (ledger.getOutcome(requestNumber) == null) {
+            log.info("Received DECIDE with request number: " + requestNumber +
+                    " and command: " + command);
+            ledger.logOutcome(requestNumber, command);
         }
     }
 
-    public boolean onLeaderQuery() {
-        synchronized (electionLock) {
-            return leader != null && leader.isLocal();
-        }
-    }
-
-    private void onElection() {
-        if (electionInProgress.compareAndSet(false, true)) {
-            status = LEADER_ELECTION;
-            exec.submit(new Runnable() {
-                @Override
-                public void run() {
-                    leader = electionCommissioner.electLeader();
-                }
-            });
-        } else {
-            log.info("Election already in progress - Not starting another one");
-        }
-    }
-
-    public void onVictory(VictoryEvent victory) {
-        synchronized (electionLock) {
-            log.info("New leader elected");
-            Member member = victory.getMember();
-            if (electionInProgress.get() && !member.isLocal()) {
-                electionCommissioner.setWinner(member);
-            }
-
-            if (leader == null) {
-                log.info("New leader elected: " + member.getProcessId());
-                leader = member;
-            } else {
-                if (leader.equals(member)) {
-                    log.info("Election came to an end with the current leader extending his lease");
-                } else {
-                    log.info("Change of leadership: " + leader.getProcessId() +
-                            " --> " + member.getProcessId());
-                    leader = member;
-                }
-            }
-            electionInProgress.compareAndSet(true, false);
-            electionLock.notifyAll();
-        }
-    }
-
-    private void startPaxosPreparationPhase() {
-        updateStatus(LEADER_ELECTION, LEADER_RECOVERY_MODE);
+    private void runPreparePhase() {
         while (true) {
-            log.info("Starting Paxos preparation phase");
-            ackStore.clear();
-            long lastExecuted = ledger.getLastExecutedRequest();
-            if (lastExecuted == -1) {
-                lastExecuted = 1;
-            } else {
-                lastExecuted++;
-            }
-
-            BallotNumber ballotNumber = ledger.getLastTriedBallotNumber();
-            if (ballotNumber == null) {
-                ballotNumber = new BallotNumber(0, config.getLocalMember().getProcessId());
-            } else {
-                ballotNumber.increment();
-            }
-            ledger.logLastTriedBallotNumber(ballotNumber);
             synchronized (prepareLock) {
-                communicator.sendPrepare(ballotNumber, lastExecuted);
+                log.info("Starting Paxos prepare phase");
+                protocolState = PaxosProtocolState.TRYING;
+                ackStore.clear();
+                BallotNumber ballotNumber = ledger.getLastTriedBallotNumber();
+                if (ballotNumber == null) {
+                    ballotNumber = new BallotNumber(0, config.getLocalMember().getProcessId());
+                }
+                BallotNumber largestSeen = ledger.getLargestPreviousBallotNumber();
+
+                if (ballotNumber.compareTo(largestSeen) < 0) {
+                    ballotNumber = new BallotNumber(largestSeen.getNumber(),
+                            config.getLocalMember().getProcessId());
+                }
+                ballotNumber.increment();
+
+                long requestNumber = ledger.getLastExecutedRequest();
+                if (requestNumber == -1) {
+                    requestNumber = 1;
+                } else {
+                    requestNumber++;
+                }
+
+                ledger.logLastTriedBallotNumber(ballotNumber);
+                communicator.sendPrepare(ballotNumber, requestNumber);
                 try {
-                    prepareLock.wait(30000);
+                    prepareLock.wait(5000);
                 } catch (InterruptedException ignored) {
                 }
-            }
 
-            if (ackStore.size() > config.getMembers().length/2.0) {
-                log.info("Received majority ack messages");
-                finishPaxosPreparationPhase(ballotNumber);
-                return;
-            } else {
-                log.info("Failed to obtain majority ack messages - Retrying in 2 seconds");
-                try {
-                    Thread.sleep(2000);
-                } catch (InterruptedException ignored) {
+                if (config.isMajority(ackStore.size())) {
+                    log.info("Received ACK messages from a majority");
+                    protocolState = PaxosProtocolState.POLLING;
+                    runRecoveryProcedure(ballotNumber);
+                    return;
+                } else {
+                    log.info("Failed to obtain ACK messages from a majority - Retrying");
                 }
             }
         }
     }
 
-    private void finishPaxosPreparationPhase(BallotNumber ballotNumber) {
+    private void runRecoveryProcedure(BallotNumber ballotNumber) {
         Map<Long,Command> pastOutcomes = new HashMap<Long, Command>();
         Map<Long,BallotNumber> largestBallot = new HashMap<Long, BallotNumber>();
         Map<Long,Command> pendingCommands = new HashMap<Long, Command>();
@@ -324,50 +267,103 @@ public class PaxosAgent {
         if (pastOutcomes.size() > 0) {
             for (Map.Entry<Long,Command> entry : pastOutcomes.entrySet()) {
                 log.info("Merging the outcome of request: " + entry.getKey() + " to the local store");
-                onDecide(new DecideEvent(ballotNumber, entry.getKey(), entry.getValue()), false);
+                onDecide(new DecideEvent(ballotNumber, entry.getKey(), entry.getValue()));
             }
         }
 
         if (pendingCommands.size() > 0) {
             for (Map.Entry<Long,Command> entry : pendingCommands.entrySet()) {
                 log.info("Running accept phase on: " + entry.getKey());
-                sendAccept(ballotNumber, entry.getKey(), entry.getValue());
+                runAcceptPhase(ballotNumber, entry.getKey(), entry.getValue());
             }
         }
 
         log.info("Successfully finished the Paxos recovery (view change) mode");
-        updateStatus(LEADER_RECOVERY_MODE, LEADER_NORMAL_MODE);
     }
 
-    private void sendAccept(BallotNumber ballotNumber, Long requestNumber, Command command) {
-        acceptCount.put(requestNumber, new AtomicInteger(0));
-        commands.put(requestNumber, command);
+    private void runAcceptPhase(BallotNumber ballotNumber, long requestNumber, Command command) {
         synchronized (acceptLock) {
+            if (protocolState != PaxosProtocolState.POLLING) {
+                throw new WrenchException("Invalid protocol state. Expected: " +
+                        PaxosProtocolState.POLLING + ", Found: " + protocolState);
+            }
+            acceptCount.put(requestNumber, new AtomicInteger(0));
             communicator.sendAccept(ballotNumber, requestNumber, command);
             try {
-                acceptLock.wait(30000);
+                acceptLock.wait(5000);
             } catch (InterruptedException ignored) {
             }
-        }
 
-        if (ledger.getOutcome(requestNumber).equals(command)) {
-            log.info("Request number " + requestNumber + " is fully dealt with");
-        } else {
-            log.warn("Failed to obtain majority consensus");
+            int votes = acceptCount.get(requestNumber).get();
+            if (config.isMajority(votes)) {
+                log.info("Request number " + requestNumber + " is fully dealt with");
+                ledger.logOutcome(requestNumber, command);
+                communicator.sendDecide(ballotNumber, requestNumber, command);
+            } else {
+                log.warn("Failed to obtain majority consensus");
+            }
         }
     }
 
-    private void handleException(String msg, Exception e) {
-        log.error(msg, e);
-        throw new WrenchException(msg, e);
+    public void onElection() {
+        log.info("Received ELECTION request");
+        startElection();
+    }
+
+    private void startElection() {
+        if (electionInProgress.compareAndSet(false, true)) {
+            synchronized (electionLock) {
+                leader = null;
+                while (leader == null) {
+                    exec.submit(electionCommissioner);
+                    try {
+                        electionLock.wait();
+                    } catch (InterruptedException ignored) {
+                    }
+                }
+            }
+        } else {
+            log.info("Election already in progress - Not starting another");
+        }
+    }
+
+    public void onVictory(Member winner) {
+        synchronized (electionLock) {
+            log.info("New leader elected - All hail: " + winner.getProcessId());
+            leader = winner;
+            if (electionInProgress.compareAndSet(true, false)) {
+                electionCommissioner.setWinner(winner);
+            }
+            electionLock.notifyAll();
+        }
+    }
+
+    public boolean onLeaderQuery() {
+        synchronized (electionLock) {
+            return leader != null && leader.isLocal();
+        }
     }
 
     private class PaxosWorker implements Runnable {
 
+        boolean stop = false;
+
         @Override
         public void run() {
-            while (true) {
-                Event event = eventQueue.poll();
+            log.info("Initializing Paxos task");
+            while (!stop || !eventQueue.isEmpty()) {
+                synchronized (electionLock) {
+                    while (leader == null) {
+                        log.info("Pausing Paxos task until leader election is complete");
+                        try {
+                            electionLock.wait();
+                        } catch (InterruptedException ignored) {
+                        }
+                        log.info("Resuming Paxos task");
+                    }
+                }
+
+                PaxosEvent event = eventQueue.poll();
                 if (event == null) {
                     synchronized (eventQueue) {
                         try {
@@ -387,22 +383,22 @@ public class PaxosAgent {
                 } else if (event instanceof AcceptedEvent) {
                     onAccepted((AcceptedEvent) event);
                 } else if (event instanceof DecideEvent) {
-                    onDecide((DecideEvent) event, true);
-                }  else if (event instanceof ElectionEvent) {
-                    onElection();
-                } else if (event instanceof VictoryEvent) {
-                    onVictory((VictoryEvent) event);
+                    onDecide((DecideEvent) event);
                 }
+            }
+        }
+
+        private void stop() {
+            this.stop = true;
+            synchronized (eventQueue) {
+                eventQueue.notifyAll();
             }
         }
     }
 
-    private synchronized void updateStatus(int expected, int next) {
-        if (expected != this.status) {
-            throw new WrenchException("Invalid status - Expected: " + expected +
-                    ", Found: " + this.status);
-        }
-        this.status = next;
+    private void handleException(String msg, Exception e) {
+        log.error(msg, e);
+        throw new WrenchException(msg, e);
     }
 
 }

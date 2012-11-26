@@ -7,7 +7,13 @@ import java.io.File;
 public class Main {
 
     public static void main(String[] args) {
-        PaxosAgent agent = new PaxosAgent();
+        final PaxosAgent agent = new PaxosAgent();
+        Runtime.getRuntime().addShutdownHook(new Thread() {
+            @Override
+            public void run() {
+                agent.stop();
+            }
+        });
         agent.start();
     }
 }

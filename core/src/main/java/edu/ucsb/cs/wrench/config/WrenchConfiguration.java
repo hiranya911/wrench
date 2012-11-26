@@ -106,6 +106,10 @@ public class WrenchConfiguration {
         throw new WrenchException("Unknown member: " + processId);
     }
 
+    public boolean isMajority(int count) {
+        return count > members.length/2.0;
+    }
+
     public static WrenchConfiguration getConfiguration() {
         if (config == null) {
             synchronized (WrenchConfiguration.class) {

@@ -120,6 +120,21 @@ public class PaxosLedger {
         return prev;
     }
 
+    public BallotNumber getLargestPreviousBallotNumber() {
+        ListIterator<String> iterator = listIterator();
+        BallotNumber ballotNumber = null;
+        while (iterator.hasPrevious()) {
+            String line = iterator.previous();
+            if (line.startsWith(PREV_BALLOT)) {
+                BallotNumber bal = new BallotNumber(line.split(" ")[2]);
+                if (bal.compareTo(ballotNumber) > 0) {
+                    ballotNumber = bal;
+                }
+            }
+        }
+        return ballotNumber;
+    }
+
     public Command getPreviousCommand(long requestNumber) {
         Command prev = prevCommand.get(requestNumber);
         if (prev != null) {

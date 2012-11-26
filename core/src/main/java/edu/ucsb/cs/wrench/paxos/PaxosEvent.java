@@ -1,8 +1,6 @@
 package edu.ucsb.cs.wrench.paxos;
 
-import edu.ucsb.cs.wrench.messaging.Event;
-
-public abstract class PaxosEvent extends Event {
+public abstract class PaxosEvent {
 
     protected BallotNumber ballotNumber;
 

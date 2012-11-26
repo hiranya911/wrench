@@ -1,8 +1,7 @@
 package edu.ucsb.cs.wrench.messaging;
 
 import edu.ucsb.cs.wrench.commands.CommandFactory;
-import edu.ucsb.cs.wrench.elections.ElectionEvent;
-import edu.ucsb.cs.wrench.elections.VictoryEvent;
+import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.paxos.*;
 import org.apache.thrift.TException;
 
@@ -23,13 +22,13 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
 
     @Override
     public boolean election() throws TException {
-        agent.enqueue(new ElectionEvent());
+        agent.onElection();
         return true;
     }
 
     @Override
     public void victory(String processId) throws TException {
-        agent.enqueue(new VictoryEvent(processId));
+        agent.onVictory(WrenchConfiguration.getConfiguration().getMember(processId));
     }
 
     @Override

@@ -3,6 +3,7 @@ package edu.ucsb.cs.wrench.messaging;
 import edu.ucsb.cs.wrench.commands.Command;
 import edu.ucsb.cs.wrench.config.Member;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
+import edu.ucsb.cs.wrench.paxos.AcceptedEvent;
 import edu.ucsb.cs.wrench.paxos.AckEvent;
 import edu.ucsb.cs.wrench.paxos.BallotNumber;
 import org.apache.commons.logging.Log;
@@ -16,64 +17,76 @@ import org.apache.thrift.transport.TTransportException;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class WrenchCommunicator {
 
     private static final Log log = LogFactory.getLog(WrenchCommunicator.class);
 
-    private Map<Member,TTransport> transports = new ConcurrentHashMap<Member, TTransport>();
-
     public static final String NULL_STRING = "null";
 
     public synchronized boolean sendElectionMessage(Member remoteMember) {
+        TTransport transport = new TSocket(remoteMember.getHostname(), remoteMember.getPort());
         try {
-            WrenchManagementService.Client client = getClient(remoteMember);
+            WrenchManagementService.Client client = getClient(transport);
             return client.election();
         } catch (TException e) {
             handleException(remoteMember, e);
             return !(e instanceof TTransportException);
+        } finally {
+            close(transport);
         }
     }
 
     public void sendVictoryMessage(Member localMember, Member remoteMember) {
+        TTransport transport = new TSocket(remoteMember.getHostname(), remoteMember.getPort());
         try {
-            WrenchManagementService.Client client = getClient(remoteMember);
+            WrenchManagementService.Client client = getClient(transport);
             client.victory(localMember.getProcessId());
         } catch (TException e) {
             handleException(remoteMember, e);
+        } finally {
+            close(transport);
         }
     }
 
     public boolean sendLeaderQueryMessage(Member remoteMember) {
+        TTransport transport = new TSocket(remoteMember.getHostname(), remoteMember.getPort());
         try {
-            WrenchManagementService.Client client = getClient(remoteMember);
+            WrenchManagementService.Client client = getClient(transport);
             return client.isLeader();
         } catch (TException e) {
             handleException(remoteMember, e);
             return false;
+        } finally {
+            close(transport);
         }
     }
 
     public boolean ping(Member remoteMember) {
+        TTransport transport = new TSocket(remoteMember.getHostname(), remoteMember.getPort());
         try {
-            WrenchManagementService.Client client = getClient(remoteMember);
+            WrenchManagementService.Client client = getClient(transport);
             return client.ping();
         } catch (TException e) {
             handleException(remoteMember, e);
             return false;
+        } finally {
+            close(transport);
         }
     }
 
     public void sendPrepare(BallotNumber ballotNumber, long requestNumber) {
         WrenchConfiguration config = WrenchConfiguration.getConfiguration();
         for (Member member : config.getMembers()) {
+            TTransport transport = new TSocket(member.getHostname(), member.getPort());
             try {
                 log.info("Sending PREPARE message to: " + member.getProcessId());
-                WrenchManagementService.Client client = getClient(member);
+                WrenchManagementService.Client client = getClient(transport);
                 client.prepare(toThriftBallotNumber(ballotNumber), requestNumber);
             } catch (TException e) {
                 handleException(member, e);
+            } finally {
+                close(transport);
             }
         }
     }
@@ -81,25 +94,32 @@ public class WrenchCommunicator {
     public void sendAccept(BallotNumber ballotNumber, long requestNumber, Command value) {
         WrenchConfiguration config = WrenchConfiguration.getConfiguration();
         for (Member member : config.getMembers()) {
+            TTransport transport = new TSocket(member.getHostname(), member.getPort());
             try {
-                WrenchManagementService.Client client = getClient(member);
+                WrenchManagementService.Client client = getClient(transport);
                 client.accept(toThriftBallotNumber(ballotNumber), requestNumber, value.toString());
             } catch (TException e) {
                 handleException(member, e);
+            } finally {
+                close(transport);
             }
         }
     }
 
-    public void sendAccepted(BallotNumber ballotNumber, long requestNumber, Member member) {
+    public void sendAccepted(AcceptedEvent accepted, Member remoteMember) {
+        TTransport transport = new TSocket(remoteMember.getHostname(), remoteMember.getPort());
         try {
-            WrenchManagementService.Client client = getClient(member);
-            client.accepted(toThriftBallotNumber(ballotNumber), requestNumber);
+            WrenchManagementService.Client client = getClient(transport);
+            client.accepted(toThriftBallotNumber(accepted.getBallotNumber()),
+                    accepted.getRequestNumber());
         } catch (TException e) {
-            handleException(member, e);
+            handleException(remoteMember, e);
+        } finally {
+            close(transport);
         }
     }
 
-    public void sendAck(AckEvent ack, Member member) {
+    public void sendAck(AckEvent ack, Member remoteMember) {
         Map<Long,edu.ucsb.cs.wrench.messaging.BallotNumber> acceptNum =
                 new HashMap<Long, edu.ucsb.cs.wrench.messaging.BallotNumber>();
         for (Map.Entry<Long,BallotNumber> entry : ack.getAcceptNumbers().entrySet()) {
@@ -116,11 +136,14 @@ public class WrenchCommunicator {
             outcomes.put(entry.getKey(), entry.getValue().toString());
         }
 
+        TTransport transport = new TSocket(remoteMember.getHostname(), remoteMember.getPort());
         try {
-            WrenchManagementService.Client client = getClient(member);
+            WrenchManagementService.Client client = getClient(transport);
             client.ack(toThriftBallotNumber(ack.getBallotNumber()), acceptNum, acceptVal, outcomes);
         } catch (TException e) {
-            handleException(member, e);
+            handleException(remoteMember, e);
+        } finally {
+            close(transport);
         }
     }
 
@@ -130,11 +153,15 @@ public class WrenchCommunicator {
             if (member.isLocal()) {
                 continue;
             }
+
+            TTransport transport = new TSocket(member.getHostname(), member.getPort());
             try {
-                WrenchManagementService.Client client = getClient(member);
+                WrenchManagementService.Client client = getClient(transport);
                 client.decide(toThriftBallotNumber(ballotNumber), requestNumber, command.toString());
             } catch (TException e) {
                 handleException(member, e);
+            } finally {
+                close(transport);
             }
         }
     }
@@ -147,31 +174,21 @@ public class WrenchCommunicator {
         }
     }
 
-    private WrenchManagementService.Client getClient(Member member) throws TTransportException {
-        TTransport transport = transports.get(member);
-        if (transport == null) {
-            synchronized (this) {
-                transport = transports.get(member);
-                if (transport == null) {
-                    transport = new TSocket(member.getHostname(), member.getPort());
-                    transport.open();
-                    log.info("Opened connection to: " + member.getProcessId());
-                    transports.put(member, transport);
-                }
-            }
-        }
+    private WrenchManagementService.Client getClient(TTransport transport) throws TTransportException {
+        transport.open();
         TProtocol protocol = new TBinaryProtocol(transport);
         return new WrenchManagementService.Client(protocol);
+    }
+
+    private void close(TTransport transport) {
+        if (transport.isOpen()) {
+            transport.close();
+        }
     }
 
     private void handleException(Member target, TException e) {
         String msg = "Error contacting the remote member: " + target.getProcessId();
         log.warn(msg);
         log.debug(msg, e);
-        TTransport transport = transports.remove(target);
-        if (transport != null && transport.isOpen()) {
-            log.info("Closing connection to: " + target.getProcessId());
-            transport.close();
-        }
     }
 }

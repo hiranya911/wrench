@@ -10,7 +10,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
-public class ElectionCommissioner {
+public class ElectionCommissioner implements Runnable {
 
     private static final Log log = LogFactory.getLog(ElectionCommissioner.class);
 
@@ -23,9 +23,9 @@ public class ElectionCommissioner {
         this.config = WrenchConfiguration.getConfiguration();
     }
 
-    public Member electLeader() {
-        Member[] members = config.getMembers();
+    public void run() {
         winner = null;
+        Member[] members = config.getMembers();
         Arrays.sort(members);
 
         Set<Member> highProcesses = new HashSet<Member>();
@@ -38,21 +38,23 @@ public class ElectionCommissioner {
             }
         }
 
-        if (highProcesses.isEmpty()) {
+        while (true) {
+            // Wait until we have a majority of nodes up and running.
+            // This prevents a node from becoming the leader, when it's
+            // disconnected from the rest, due to a partitioning failure.
             waitForMajority();
-            if (winner != null) {
-                return winner;
-            }
-            log.info("I'm the highest process of all - I Win");
-            sendVictoryNotification(localMember);
-            return localMember;
-        } else {
-            while (true) {
-                waitForMajority();
-                if (winner != null) {
-                    return winner;
-                }
 
+            // It's possible that while we were waiting, a bunch of other
+            // nodes woke up and had an election.
+            if (winner != null) {
+                return;
+            }
+
+            if (highProcesses.isEmpty()) {
+                log.info("I'm the highest process of all - I win");
+                sendVictoryNotification(localMember);
+                return;
+            } else {
                 log.info("Starting new leader election");
                 boolean higherProcessSeen = false;
                 for (Member member : highProcesses) {
@@ -78,12 +80,12 @@ public class ElectionCommissioner {
                         log.info("Winner didn't notify in time - Retrying...");
                     } else {
                         log.info("Victory message received - This election is done and dusted");
-                        return winner;
+                        return;
                     }
                 } else {
                     log.info("I'm the highest process alive - I win");
                     sendVictoryNotification(localMember);
-                    return localMember;
+                    return;
                 }
             }
         }
