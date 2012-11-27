@@ -53,6 +53,8 @@ public class PaxosAgent {
     private PaxosWorker paxosWorker = new PaxosWorker();
     private PaxosProtocolState protocolState = PaxosProtocolState.IDLE;
 
+    private long nextRequest;
+
     public void start() {
         try {
             ledger = new PaxosLedger();
@@ -91,6 +93,15 @@ public class PaxosAgent {
                     } catch (InterruptedException ignored) {
                     }
                 }
+            }
+        }
+
+        Map<Long,Command> pastCommands = ledger.getPreviousOutcomes(
+                ledger.getLastExecutedRequest() + 1);
+        if (pastCommands.size() > 0) {
+            log.info("Executing " + pastCommands + " past commands from the ledger");
+            for (Map.Entry<Long,Command> entry : pastCommands.entrySet()) {
+                // TODO: Execute them all
             }
         }
 
@@ -222,15 +233,8 @@ public class PaxosAgent {
                 }
                 ballotNumber.increment();
 
-                long requestNumber = ledger.getLastExecutedRequest();
-                if (requestNumber == -1) {
-                    requestNumber = 1;
-                } else {
-                    requestNumber++;
-                }
-
                 ledger.logLastTriedBallotNumber(ballotNumber);
-                communicator.sendPrepare(ballotNumber, requestNumber);
+                communicator.sendPrepare(ballotNumber, getNextRequestNumber());
                 try {
                     prepareLock.wait(5000);
                 } catch (InterruptedException ignored) {
@@ -239,7 +243,7 @@ public class PaxosAgent {
                 if (config.isMajority(ackStore.size())) {
                     log.info("Received ACK messages from a majority");
                     protocolState = PaxosProtocolState.POLLING;
-                    runRecoveryProcedure(ballotNumber);
+                    runRecoveryProcedure();
                     return;
                 } else {
                     log.info("Failed to obtain ACK messages from a majority - Retrying");
@@ -248,7 +252,7 @@ public class PaxosAgent {
         }
     }
 
-    private void runRecoveryProcedure(BallotNumber ballotNumber) {
+    private void runRecoveryProcedure() {
         Map<Long,Command> pastOutcomes = new HashMap<Long, Command>();
         Map<Long,BallotNumber> largestBallot = new HashMap<Long, BallotNumber>();
         Map<Long,Command> pendingCommands = new HashMap<Long, Command>();
@@ -267,28 +271,40 @@ public class PaxosAgent {
         if (pastOutcomes.size() > 0) {
             for (Map.Entry<Long,Command> entry : pastOutcomes.entrySet()) {
                 log.info("Merging the outcome of request: " + entry.getKey() + " to the local store");
-                onDecide(new DecideEvent(ballotNumber, entry.getKey(), entry.getValue()));
+                onDecide(new DecideEvent(ledger.getLastTriedBallotNumber(), entry.getKey(),
+                        entry.getValue()));
             }
         }
 
         if (pendingCommands.size() > 0) {
             for (Map.Entry<Long,Command> entry : pendingCommands.entrySet()) {
                 log.info("Running accept phase on: " + entry.getKey());
-                runAcceptPhase(ballotNumber, entry.getKey(), entry.getValue());
+                runAcceptPhase(entry.getKey(), entry.getValue());
             }
         }
 
+        nextRequest = getNextRequestNumber();
         log.info("Successfully finished the Paxos recovery (view change) mode");
     }
 
-    private void runAcceptPhase(BallotNumber ballotNumber, long requestNumber, Command command) {
+    private long getNextRequestNumber() {
+        long lastRequest = ledger.getLastExecutedRequest();
+        if (lastRequest < 0) {
+            return 1;
+        } else {
+            return lastRequest + 1;
+        }
+    }
+
+    private void runAcceptPhase(long requestNumber, Command command) {
         synchronized (acceptLock) {
             if (protocolState != PaxosProtocolState.POLLING) {
                 throw new WrenchException("Invalid protocol state. Expected: " +
                         PaxosProtocolState.POLLING + ", Found: " + protocolState);
             }
             acceptCount.put(requestNumber, new AtomicInteger(0));
-            communicator.sendAccept(ballotNumber, requestNumber, command);
+            BallotNumber lastTried = ledger.getLastTriedBallotNumber();
+            communicator.sendAccept(lastTried, requestNumber, command);
             try {
                 acceptLock.wait(5000);
             } catch (InterruptedException ignored) {
@@ -298,7 +314,7 @@ public class PaxosAgent {
             if (config.isMajority(votes)) {
                 log.info("Request number " + requestNumber + " is fully dealt with");
                 ledger.logOutcome(requestNumber, command);
-                communicator.sendDecide(ballotNumber, requestNumber, command);
+                communicator.sendDecide(lastTried, requestNumber, command);
             } else {
                 log.warn("Failed to obtain majority consensus");
             }
