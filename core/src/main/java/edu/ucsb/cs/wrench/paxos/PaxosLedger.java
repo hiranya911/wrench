@@ -13,8 +13,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.ListIterator;
-import java.util.Set;
-import java.util.TreeSet;
 
 public class PaxosLedger {
 
@@ -32,7 +30,7 @@ public class PaxosLedger {
     private BallotNumber nextBal;
     private LRUCache<Long,BallotNumber> prevBal = new LRUCache<Long, BallotNumber>(10);
     private LRUCache<Long,Command> outcome = new LRUCache<Long, Command>(10);
-    private long lastExecuted = -1;
+    private long lastExecuted = 0;
 
     public PaxosLedger() throws IOException {
         WrenchConfiguration config = WrenchConfiguration.getConfiguration();
@@ -121,7 +119,7 @@ public class PaxosLedger {
                 if (requestNumber > start) {
                     BallotNumber prev = new BallotNumber(line.split(" ")[2]);
                     Command command = CommandFactory.createCommand(line.substring(
-                            line.indexOf('[') + 1, line.lastIndexOf(']')));
+                            line.lastIndexOf('[') + 1, line.lastIndexOf(']')));
                     history.addPreviousBallotNumber(requestNumber, prev);
                     history.addPreviousCommand(requestNumber, command);
                 }
@@ -159,7 +157,7 @@ public class PaxosLedger {
     }
 
     public long getLastExecutedRequest() {
-        if (lastExecuted == -1) {
+        if (lastExecuted == 0) {
             ListIterator<String> iterator = listIterator();
             while (iterator.hasPrevious()) {
                 String line = iterator.previous();

@@ -19,22 +19,25 @@ import org.apache.thrift.transport.TTransportException;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class PaxosAgent {
 
     private static final Log log = LogFactory.getLog(PaxosAgent.class);
 
+    private static final int INIT = 0;
+    private static final int IN_PROGRESS = 1;
+    private static final int SUCCESS = 2;
+    private static final int FAILED = 3;
+
     private PaxosLedger ledger;
     private Member leader;
     private TServer server;
 
-    private ExecutorService exec = Executors.newFixedThreadPool(5);
+    private ExecutorService exec = Executors.newCachedThreadPool();
     private WrenchCommunicator communicator = new WrenchCommunicator();
     private ElectionCommissioner electionCommissioner = new ElectionCommissioner(communicator);
     private WrenchConfiguration config = WrenchConfiguration.getConfiguration();
@@ -48,11 +51,16 @@ public class PaxosAgent {
     private final Object prepareLock = new Object();
     private final Object acceptLock = new Object();
     private final Object electionLock = new Object();
+    private final Object stateMachineLock = new Object();
 
     private final Queue<PaxosEvent> eventQueue = new ConcurrentLinkedQueue<PaxosEvent>();
+    private Map<Long,Command> commands = new ConcurrentHashMap<Long, Command>();
 
     private PaxosWorker paxosWorker = new PaxosWorker();
     private PaxosProtocolState protocolState = PaxosProtocolState.IDLE;
+    private PaxosAgentMode agentMode = PaxosAgentMode.UNDEFINED;
+
+    private AtomicLong nextRequest = new AtomicLong(1);
 
     public void start() {
         try {
@@ -86,7 +94,9 @@ public class PaxosAgent {
         Map<Long,Command> pastCommands = history.getPrevOutcomes();
         if (pastCommands.size() > 0) {
             log.info("Executing " + pastCommands + " past commands from the ledger");
-            // TODO: Execute them all
+            for (Map.Entry<Long,Command> entry : pastCommands.entrySet()) {
+                executeCommands(entry.getKey(), entry.getValue());
+            }
         }
 
         // Start the Paxos event processor
@@ -95,6 +105,7 @@ public class PaxosAgent {
             leader = electionCommissioner.discoverLeader();
             if (leader != null) {
                 log.info("Discovered existing leader: " + leader.getProcessId());
+                setAgentMode(PaxosAgentMode.COHORT);
             } else {
                 startElection();
             }
@@ -105,6 +116,46 @@ public class PaxosAgent {
         synchronized (eventQueue) {
             eventQueue.offer(event);
             eventQueue.notifyAll();
+        }
+    }
+
+    public boolean executeClientRequest(final Command command) {
+        synchronized (stateMachineLock) {
+            while (agentMode != PaxosAgentMode.LEADER &&
+                    agentMode != PaxosAgentMode.COHORT) {
+                try {
+                    stateMachineLock.wait();
+                } catch (InterruptedException ignored) {
+                }
+            }
+        }
+
+        if (leader.isLocal()) {
+            final long requestNumber = nextRequest.getAndIncrement();
+            final AtomicInteger state = new AtomicInteger(INIT);
+            exec.submit(new Runnable() {
+                @Override
+                public void run() {
+                    state.compareAndSet(INIT, IN_PROGRESS);
+                    if (!runAcceptPhase(requestNumber, command)) {
+                        state.compareAndSet(IN_PROGRESS, FAILED);
+                    } else {
+                        state.compareAndSet(IN_PROGRESS, SUCCESS);
+                    }
+                }
+            });
+            log.info("Submitted request number: " + requestNumber);
+
+            while (state.get() <= IN_PROGRESS) {
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException ignored) {
+                }
+            }
+
+            return state.get() == SUCCESS;
+        } else {
+            return false;
         }
     }
 
@@ -200,6 +251,21 @@ public class PaxosAgent {
             log.info("Received DECIDE with request number: " + requestNumber +
                     " and command: " + command);
             ledger.logOutcome(requestNumber, command);
+            executeCommands(requestNumber, command);
+        }
+    }
+
+    private synchronized void executeCommands(long requestNumber, Command command) {
+        commands.put(requestNumber, command);
+        while (true) {
+            long next = ledger.getLastExecutedRequest() + 1;
+            Command cmd = commands.remove(next);
+            if (cmd != null && cmd.execute()) {
+                log.info("Executed request: " + requestNumber + ", command: " + command);
+                ledger.logExecution(next);
+            } else {
+                break;
+            }
         }
     }
 
@@ -279,20 +345,33 @@ public class PaxosAgent {
             }
         }
 
+        boolean allAccepted = true;
         if (pendingCommands.size() > 0) {
             for (Map.Entry<Long,Command> entry : pendingCommands.entrySet()) {
                 log.info("Running accept phase on: " + entry.getKey());
-                runAcceptPhase(entry.getKey(), entry.getValue());
+                if (!runAcceptPhase(entry.getKey(), entry.getValue())) {
+                    allAccepted = false;
+                    break;
+                }
             }
         }
 
-        synchronized (electionLock) {
-            electionLock.notifyAll();
+        if (allAccepted) {
+            log.info("Successfully finished the Paxos recovery (view change) mode");
+            long last = ledger.getLargestDecidedRequest();
+            if (last < 0) {
+                nextRequest = new AtomicLong(1);
+            }  else {
+                nextRequest = new AtomicLong(last + 1);
+            }
+            setAgentMode(PaxosAgentMode.LEADER);
+        } else {
+            log.warn("Some commands were not accepted - Possible multiple leaders!");
+            startElection();
         }
-        log.info("Successfully finished the Paxos recovery (view change) mode");
     }
 
-    private void runAcceptPhase(long requestNumber, Command command) {
+    private boolean runAcceptPhase(long requestNumber, Command command) {
         synchronized (acceptLock) {
             if (protocolState != PaxosProtocolState.POLLING) {
                 throw new WrenchException("Invalid protocol state. Expected: " +
@@ -309,10 +388,12 @@ public class PaxosAgent {
             int votes = acceptCount.get(requestNumber).get();
             if (config.isMajority(votes)) {
                 log.info("Request number " + requestNumber + " is fully dealt with");
-                ledger.logOutcome(requestNumber, command);
+                onDecide(new DecideEvent(lastTried, requestNumber, command));
                 communicator.sendDecide(lastTried, requestNumber, command);
+                return true;
             } else {
                 log.warn("Failed to obtain majority consensus");
+                return false;
             }
         }
     }
@@ -326,6 +407,7 @@ public class PaxosAgent {
         if (electionInProgress.compareAndSet(false, true)) {
             synchronized (electionLock) {
                 leader = null;
+                setAgentMode(PaxosAgentMode.VIEW_CHANGE);
                 exec.submit(electionCommissioner);
             }
         } else {
@@ -350,12 +432,8 @@ public class PaxosAgent {
                         runPreparePhase();
                     }
                 });
-                while (protocolState != PaxosProtocolState.POLLING) {
-                    try {
-                        electionLock.wait();
-                    } catch (InterruptedException ignored) {
-                    }
-                }
+            } else {
+                setAgentMode(PaxosAgentMode.COHORT);
             }
         }
     }
@@ -363,6 +441,13 @@ public class PaxosAgent {
     public boolean onLeaderQuery() {
         synchronized (electionLock) {
             return leader != null && leader.isLocal();
+        }
+    }
+
+    private void setAgentMode(PaxosAgentMode mode) {
+        synchronized (stateMachineLock) {
+            agentMode = mode;
+            stateMachineLock.notifyAll();
         }
     }
 
@@ -385,15 +470,16 @@ public class PaxosAgent {
                     }
                 }
 
-                PaxosEvent event = eventQueue.poll();
-                if (event == null) {
-                    synchronized (eventQueue) {
+                PaxosEvent event;
+                synchronized (eventQueue) {
+                    event = eventQueue.poll();
+                    if (event == null) {
                         try {
                             eventQueue.wait();
                         } catch (InterruptedException ignored) {
                         }
+                        continue;
                     }
-                    continue;
                 }
 
                 if (event instanceof PrepareEvent) {

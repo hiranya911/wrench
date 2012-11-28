@@ -19,7 +19,8 @@ public class TxPrepareCommand extends Command {
 
     @Override
     public boolean execute() {
-        String tempDir = WrenchConfiguration.getConfiguration().getTempDirectoryPath();
+        WrenchConfiguration config = WrenchConfiguration.getConfiguration();
+        File tempDir = new File(config.getWrenchHome(), config.getTempDirectoryPath());
         File file = new File(tempDir, transactionId + ".dat");
         try {
             FileUtils.writeStringToFile(file, data);

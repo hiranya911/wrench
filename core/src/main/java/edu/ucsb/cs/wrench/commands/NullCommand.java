@@ -17,4 +17,9 @@ public class NullCommand extends Command {
     public boolean execute() {
         return true;
     }
+
+    @Override
+    public boolean equals(Object o) {
+        return (o instanceof NullCommand);
+    }
 }

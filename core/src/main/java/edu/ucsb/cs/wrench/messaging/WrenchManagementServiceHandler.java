@@ -1,6 +1,7 @@
 package edu.ucsb.cs.wrench.messaging;
 
 import edu.ucsb.cs.wrench.commands.CommandFactory;
+import edu.ucsb.cs.wrench.commands.TxPrepareCommand;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.paxos.*;
 import org.apache.thrift.TException;
@@ -79,6 +80,17 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
         DecideEvent decide = new DecideEvent(toPaxosBallotNumber(ballotNumber),
                 requestNumber, CommandFactory.createCommand(command));
         agent.enqueue(decide);
+    }
+
+    @Override
+    public boolean append(String transactionId, String data) throws TException {
+        TxPrepareCommand command = new TxPrepareCommand(transactionId, data);
+        return agent.executeClientRequest(command);
+    }
+
+    @Override
+    public void notifyAppend(String transactionId) throws TException {
+
     }
 
     private edu.ucsb.cs.wrench.paxos.BallotNumber toPaxosBallotNumber(BallotNumber ballotNumber) {
