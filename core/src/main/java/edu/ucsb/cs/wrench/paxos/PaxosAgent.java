@@ -43,13 +43,11 @@ public class PaxosAgent {
     private WrenchConfiguration config = WrenchConfiguration.getConfiguration();
     private AtomicBoolean electionInProgress = new AtomicBoolean(false);
     private Set<AckEvent> ackStore = new HashSet<AckEvent>();
-    private Map<Long,AtomicInteger> acceptCount = new HashMap<Long, AtomicInteger>();
+    private Map<Long,AtomicInteger> acceptCount = new ConcurrentHashMap<Long, AtomicInteger>();
 
-    private Future thriftTask;
     private Future paxosTask;
 
     private final Object prepareLock = new Object();
-    private final Object acceptLock = new Object();
     private final Object electionLock = new Object();
     private final Object stateMachineLock = new Object();
 
@@ -77,7 +75,7 @@ public class PaxosAgent {
             TServerTransport serverTransport = new TServerSocket(port);
             server = new TThreadPoolServer(new TThreadPoolServer.
                     Args(serverTransport).processor(processor));
-            thriftTask = exec.submit(new Runnable() {
+            exec.submit(new Runnable() {
                 @Override
                 public void run() {
                     server.serve();
@@ -160,7 +158,7 @@ public class PaxosAgent {
     }
 
     public void stop() {
-        thriftTask.cancel(true);
+        server.stop();
         System.out.println("Stopped the Thrift service");
         paxosWorker.stop();
         while (paxosTask != null && !paxosTask.isDone()) {
@@ -230,15 +228,17 @@ public class PaxosAgent {
     }
 
     private void onAccepted(AcceptedEvent accepted) {
-        synchronized (acceptLock) {
-            BallotNumber ballotNumber = accepted.getBallotNumber();
-            long requestNumber = accepted.getRequestNumber();
-            if (ballotNumber.equals(ledger.getLastTriedBallotNumber()) &&
-                    protocolState == PaxosProtocolState.POLLING) {
-                log.info("Received ACCEPTED for request: " + requestNumber);
-                int votes = acceptCount.get(requestNumber).incrementAndGet();
-                if (config.isMajority(votes)) {
-                    acceptLock.notifyAll();
+        long requestNumber = accepted.getRequestNumber();
+        AtomicInteger votes = acceptCount.get(requestNumber);
+        if (votes != null) {
+            synchronized (votes) {
+                BallotNumber ballotNumber = accepted.getBallotNumber();
+                if (ballotNumber.equals(ledger.getLastTriedBallotNumber()) &&
+                        protocolState == PaxosProtocolState.POLLING) {
+                    log.info("Received ACCEPTED for request: " + requestNumber);
+                    if (config.isMajority(votes.incrementAndGet())) {
+                        votes.notifyAll();
+                    }
                 }
             }
         }
@@ -261,7 +261,7 @@ public class PaxosAgent {
             long next = ledger.getLastExecutedRequest() + 1;
             Command cmd = commands.remove(next);
             if (cmd != null && cmd.execute()) {
-                log.info("Executed request: " + requestNumber + ", command: " + command);
+                log.info("Executed request: " + next + ", command: " + cmd);
                 ledger.logExecution(next);
             } else {
                 break;
@@ -372,29 +372,31 @@ public class PaxosAgent {
     }
 
     private boolean runAcceptPhase(long requestNumber, Command command) {
-        synchronized (acceptLock) {
-            if (protocolState != PaxosProtocolState.POLLING) {
-                throw new WrenchException("Invalid protocol state. Expected: " +
-                        PaxosProtocolState.POLLING + ", Found: " + protocolState);
-            }
-            acceptCount.put(requestNumber, new AtomicInteger(0));
-            BallotNumber lastTried = ledger.getLastTriedBallotNumber();
-            communicator.sendAccept(lastTried, requestNumber, command);
+        if (protocolState != PaxosProtocolState.POLLING) {
+            throw new WrenchException("Invalid protocol state. Expected: " +
+                    PaxosProtocolState.POLLING + ", Found: " + protocolState);
+        }
+
+        AtomicInteger votes = new AtomicInteger(0);
+        acceptCount.put(requestNumber, votes);
+        BallotNumber lastTried = ledger.getLastTriedBallotNumber();
+        communicator.sendAccept(lastTried, requestNumber, command);
+        synchronized (votes) {
             try {
-                acceptLock.wait(5000);
+                votes.wait(5000);
             } catch (InterruptedException ignored) {
             }
+        }
 
-            int votes = acceptCount.get(requestNumber).get();
-            if (config.isMajority(votes)) {
-                log.info("Request number " + requestNumber + " is fully dealt with");
-                onDecide(new DecideEvent(lastTried, requestNumber, command));
-                communicator.sendDecide(lastTried, requestNumber, command);
-                return true;
-            } else {
-                log.warn("Failed to obtain majority consensus");
-                return false;
-            }
+        acceptCount.remove(requestNumber);
+        if (config.isMajority(votes.get())) {
+            log.info("Request number " + requestNumber + " is fully dealt with");
+            onDecide(new DecideEvent(lastTried, requestNumber, command));
+            communicator.sendDecide(lastTried, requestNumber, command);
+            return true;
+        } else {
+            log.warn("Failed to obtain majority consensus");
+            return false;
         }
     }
 
@@ -460,13 +462,17 @@ public class PaxosAgent {
             log.info("Initializing Paxos task");
             while (!stop || !eventQueue.isEmpty()) {
                 synchronized (electionLock) {
-                    while (leader == null) {
+                    while (!stop && leader == null) {
                         log.info("Pausing Paxos task until leader election is complete");
                         try {
                             electionLock.wait();
                         } catch (InterruptedException ignored) {
                         }
                         log.info("Resuming Paxos task");
+                    }
+
+                    if (stop) {
+                        break;
                     }
                 }
 
@@ -500,6 +506,9 @@ public class PaxosAgent {
             this.stop = true;
             synchronized (eventQueue) {
                 eventQueue.notifyAll();
+            }
+            synchronized (electionLock) {
+                electionLock.notifyAll();
             }
         }
     }
