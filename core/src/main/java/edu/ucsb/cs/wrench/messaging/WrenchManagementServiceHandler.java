@@ -46,7 +46,7 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
     public void ack(BallotNumber bal, Map<Long, BallotNumber> acceptNumbers,
                     Map<Long, String> acceptValues, Map<Long,String> outcomes) throws TException {
 
-        AckEvent ack = new AckEvent(toPaxosBallotNumber(bal));
+        AckEvent ack = new AckEvent(toPaxosBallotNumber(bal), new RequestHistory());
         for (Map.Entry<Long,BallotNumber> entry : acceptNumbers.entrySet()) {
             ack.addAcceptNumber(entry.getKey(), toPaxosBallotNumber(entry.getValue()));
         }

@@ -5,7 +5,8 @@ import edu.ucsb.cs.wrench.WrenchException;
 public abstract class CommandFactory {
 
     private static CommandFactory[] factories = {
-        new TxPrepareCommandFactory()
+        new TxPrepareCommandFactory(),
+        new NullCommandFactory()
     };
 
     public abstract Command create(String str);

@@ -11,10 +11,10 @@ import org.apache.commons.logging.LogFactory;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.List;
 import java.util.ListIterator;
-import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 public class PaxosLedger {
 
@@ -29,9 +29,8 @@ public class PaxosLedger {
     private File ledgerFile;
 
     private BallotNumber lastTried;
+    private BallotNumber nextBal;
     private LRUCache<Long,BallotNumber> prevBal = new LRUCache<Long, BallotNumber>(10);
-    private LRUCache<Long,Command> prevCommand = new LRUCache<Long, Command>(10);
-    private LRUCache<Long,BallotNumber> nextBal = new LRUCache<Long, BallotNumber>(10);
     private LRUCache<Long,Command> outcome = new LRUCache<Long, Command>(10);
     private long lastExecuted = -1;
 
@@ -46,15 +45,14 @@ public class PaxosLedger {
         lastTried = bal;
     }
 
-    public void logNextBallotNumber(long requestNumber, BallotNumber bal) {
-        append(NEXT_BALLOT + requestNumber + " " + bal);
-        nextBal.put(requestNumber, bal);
+    public void logNextBallotNumber(BallotNumber bal) {
+        append(NEXT_BALLOT + bal);
+        nextBal = bal;
     }
 
     public void logAcceptance(long requestNumber, BallotNumber bal, Command command) {
         append(PREV_BALLOT + requestNumber + " " + bal + " [" + command + "]");
         prevBal.put(requestNumber, bal);
-        prevCommand.put(requestNumber, command);
     }
 
     public void logOutcome(long requestNumber, Command command) {
@@ -68,36 +66,31 @@ public class PaxosLedger {
     }
 
     public BallotNumber getLastTriedBallotNumber() {
-        if (lastTried != null) {
-            return lastTried;
-        } else {
+        if (lastTried == null) {
             ListIterator<String> iterator = listIterator();
             while (iterator.hasPrevious()) {
                 String line = iterator.previous();
                 if (line.startsWith(LAST_TRIED)) {
                     lastTried = new BallotNumber(line.split(" ")[1]);
-                    return lastTried;
+                    break;
                 }
             }
         }
-        return null;
+        return lastTried;
     }
 
-    public BallotNumber getNextBallotNumber(long requestNumber) {
-        BallotNumber next = nextBal.get(requestNumber);
-        if (next != null) {
-            return next;
-        } else {
+    public BallotNumber getNextBallotNumber() {
+        if (nextBal == null) {
             ListIterator<String> iterator = listIterator();
             while (iterator.hasPrevious()) {
                 String line = iterator.previous();
-                if (line.startsWith(NEXT_BALLOT + requestNumber + " ")) {
-                    next = new BallotNumber(line.split(" ")[2]);
-                    nextBal.put(requestNumber, next);
+                if (line.startsWith(NEXT_BALLOT)) {
+                    nextBal = new BallotNumber(line.split(" ")[1]);
+                    break;
                 }
             }
         }
-        return next;
+        return nextBal;
     }
 
     public BallotNumber getPreviousBallotNumber(long requestNumber) {
@@ -110,82 +103,40 @@ public class PaxosLedger {
                 String line = iterator.previous();
                 if (line.startsWith(PREV_BALLOT + requestNumber + " ")) {
                     prev = new BallotNumber(line.split(" ")[2]);
-                    String command = line.substring(line.indexOf('[') + 1,
-                            line.lastIndexOf(']'));
                     prevBal.put(requestNumber, prev);
-                    prevCommand.put(requestNumber, CommandFactory.createCommand(command));
                 }
             }
         }
         return prev;
     }
 
-    public BallotNumber getLargestPreviousBallotNumber() {
+    public RequestHistory getRequestHistory(long start) {
+        RequestHistory history = new RequestHistory();
         ListIterator<String> iterator = listIterator();
-        BallotNumber ballotNumber = null;
         while (iterator.hasPrevious()) {
             String line = iterator.previous();
             if (line.startsWith(PREV_BALLOT)) {
-                BallotNumber bal = new BallotNumber(line.split(" ")[2]);
-                if (bal.compareTo(ballotNumber) > 0) {
-                    ballotNumber = bal;
+                String[] segments = line.split(" ");
+                long requestNumber = Long.parseLong(segments[1]);
+                if (requestNumber > start) {
+                    BallotNumber prev = new BallotNumber(line.split(" ")[2]);
+                    Command command = CommandFactory.createCommand(line.substring(
+                            line.indexOf('[') + 1, line.lastIndexOf(']')));
+                    history.addPreviousBallotNumber(requestNumber, prev);
+                    history.addPreviousCommand(requestNumber, command);
+                }
+            } else if (line.startsWith(OUTCOME)) {
+                String[] segments = line.split(" ");
+                long requestNumber = Long.parseLong(segments[1]);
+                if (requestNumber > start) {
+                    Command command = CommandFactory.createCommand(line.substring(
+                            line.indexOf('[') + 1, line.lastIndexOf(']')));
+                    history.addPreviousOutcome(requestNumber, command);
                 }
             }
         }
-        return ballotNumber;
-    }
 
-    public Command getPreviousCommand(long requestNumber) {
-        Command prev = prevCommand.get(requestNumber);
-        if (prev != null) {
-            return prev;
-        } else {
-            ListIterator<String> iterator = listIterator();
-            while (iterator.hasPrevious()) {
-                String line = iterator.previous();
-                if (line.startsWith(PREV_BALLOT + requestNumber + " ")) {
-                    String command = line.substring(line.indexOf('[') + 1,
-                            line.lastIndexOf(']'));
-                    prev = CommandFactory.createCommand(command);
-                    prevCommand.put(requestNumber, prev);
-                    prevBal.put(requestNumber, new BallotNumber(line.split(" ")[2]));
-                }
-            }
-        }
-        return prev;
-    }
-
-    public Map<Long,BallotNumber> getPreviousBallotNumbers(long requestNumber) {
-        Map<Long,BallotNumber> prevBallots = new HashMap<Long, BallotNumber>();
-        for (long i = requestNumber; i <= getLastExecutedRequest(); i++) {
-            BallotNumber prevBal = getPreviousBallotNumber(i);
-            if (prevBal != null) {
-                prevBallots.put(i, prevBal);
-            }
-        }
-        return prevBallots;
-    }
-
-    public Map<Long,Command> getPreviousCommands(long requestNumber) {
-        Map<Long,Command> prevCommands = new HashMap<Long,Command>();
-        for (long i = requestNumber; i <= getLastExecutedRequest(); i++) {
-            Command prevCmd = getPreviousCommand(i);
-            if (prevCmd != null) {
-                prevCommands.put(i, prevCmd);
-            }
-        }
-        return prevCommands;
-    }
-
-    public Map<Long,Command> getPreviousOutcomes(long requestNumber) {
-        Map<Long,Command> prevCommands = new HashMap<Long,Command>();
-        for (long i = requestNumber; i <= getLastExecutedRequest(); i++) {
-            Command prevCmd = getOutcome(i);
-            if (prevCmd != null) {
-                prevCommands.put(i, prevCmd);
-            }
-        }
-        return prevCommands;
+        return history;
     }
 
     public Command getOutcome(long requestNumber) {
@@ -219,6 +170,21 @@ public class PaxosLedger {
             }
         }
         return lastExecuted;
+    }
+
+    public long getLargestDecidedRequest() {
+        long lastDecided = -1;
+        ListIterator<String> iterator = listIterator();
+        while (iterator.hasPrevious()) {
+            String line = iterator.previous();
+            if (line.startsWith(OUTCOME)) {
+                long requestNumber = Long.parseLong(line.split(" ")[1]);
+                if (requestNumber > lastDecided) {
+                    lastDecided = requestNumber;
+                }
+            }
+        }
+        return lastDecided;
     }
 
 

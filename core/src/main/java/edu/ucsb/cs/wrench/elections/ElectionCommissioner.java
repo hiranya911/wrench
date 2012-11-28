@@ -130,7 +130,7 @@ public class ElectionCommissioner implements Runnable {
                     liveNodes++;
                 }
             }
-            if (liveNodes > members.length / 2.0) {
+            if (config.isMajority(liveNodes)) {
                 log.info("Majority is up");
                 break;
             } else {
