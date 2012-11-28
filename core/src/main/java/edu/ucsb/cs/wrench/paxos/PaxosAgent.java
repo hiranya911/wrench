@@ -91,7 +91,7 @@ public class PaxosAgent {
         RequestHistory history = ledger.getRequestHistory(ledger.getLastExecutedRequest());
         Map<Long,Command> pastCommands = history.getPrevOutcomes();
         if (pastCommands.size() > 0) {
-            log.info("Executing " + pastCommands + " past commands from the ledger");
+            log.info("Executing " + pastCommands.size() + " past commands from the ledger");
             for (Map.Entry<Long,Command> entry : pastCommands.entrySet()) {
                 executeCommands(entry.getKey(), entry.getValue());
             }
@@ -103,6 +103,7 @@ public class PaxosAgent {
             leader = electionCommissioner.discoverLeader();
             if (leader != null) {
                 log.info("Discovered existing leader: " + leader.getProcessId());
+                runCohortRecoveryProcedure();
                 setAgentMode(PaxosAgentMode.COHORT);
             } else {
                 startElection();
@@ -118,42 +119,45 @@ public class PaxosAgent {
     }
 
     public boolean executeClientRequest(final Command command) {
-        synchronized (stateMachineLock) {
-            while (agentMode != PaxosAgentMode.LEADER &&
-                    agentMode != PaxosAgentMode.COHORT) {
-                try {
-                    stateMachineLock.wait();
-                } catch (InterruptedException ignored) {
-                }
-            }
-        }
-
-        if (leader.isLocal()) {
+        while (true) {
+            waitForStabilization();
             final long requestNumber = nextRequest.getAndIncrement();
             final AtomicInteger state = new AtomicInteger(INIT);
-            exec.submit(new Runnable() {
-                @Override
-                public void run() {
-                    state.compareAndSet(INIT, IN_PROGRESS);
-                    if (!runAcceptPhase(requestNumber, command)) {
-                        state.compareAndSet(IN_PROGRESS, FAILED);
-                    } else {
-                        state.compareAndSet(IN_PROGRESS, SUCCESS);
+            if (leader.isLocal()) {
+                exec.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        state.compareAndSet(INIT, IN_PROGRESS);
+                        if (!runAcceptPhase(requestNumber, command)) {
+                            state.compareAndSet(IN_PROGRESS, FAILED);
+                        } else {
+                            state.compareAndSet(IN_PROGRESS, SUCCESS);
+                        }
+                    }
+                });
+                log.info("Submitted request number: " + requestNumber);
+
+                while (state.get() <= IN_PROGRESS) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException ignored) {
                     }
                 }
-            });
-            log.info("Submitted request number: " + requestNumber);
 
-            while (state.get() <= IN_PROGRESS) {
+                if (state.get() == SUCCESS) {
+                    return true;
+                } else {
+                    log.info("Failed to push the proposal through - Possible multiple leaders!");
+                    startElection();
+                }
+            } else {
+                log.info("Relaying the request to: " + leader.getProcessId());
                 try {
-                    Thread.sleep(50);
-                } catch (InterruptedException ignored) {
+                    return communicator.relayCommand(command, leader);
+                } catch (WrenchException e) {
+                    startElection();
                 }
             }
-
-            return state.get() == SUCCESS;
-        } else {
-            return false;
         }
     }
 
@@ -297,7 +301,7 @@ public class PaxosAgent {
                 if (config.isMajority(ackStore.size())) {
                     log.info("Received ACK messages from a majority");
                     protocolState = PaxosProtocolState.POLLING;
-                    runRecoveryProcedure();
+                    runLeaderRecoveryProcedure();
                     return;
                 } else {
                     log.info("Failed to obtain ACK messages from a majority - Retrying");
@@ -306,7 +310,7 @@ public class PaxosAgent {
         }
     }
 
-    private void runRecoveryProcedure() {
+    private void runLeaderRecoveryProcedure() {
         Map<Long,Command> pastOutcomes = new HashMap<Long, Command>();
         Map<Long,BallotNumber> largestBallot = new HashMap<Long, BallotNumber>();
         Map<Long,Command> pendingCommands = new HashMap<Long, Command>();
@@ -326,8 +330,7 @@ public class PaxosAgent {
             for (Map.Entry<Long,Command> entry : pastOutcomes.entrySet()) {
                 log.info("Merging the outcome of request: " + entry.getKey() + " to the local store");
                 pendingCommands.remove(entry.getKey());
-                onDecide(new DecideEvent(ledger.getLastTriedBallotNumber(), entry.getKey(),
-                        entry.getValue()));
+                onDecide(new DecideEvent(entry.getKey(), entry.getValue()));
             }
         }
 
@@ -367,6 +370,25 @@ public class PaxosAgent {
             setAgentMode(PaxosAgentMode.LEADER);
         } else {
             log.warn("Some commands were not accepted - Possible multiple leaders!");
+            startElection();
+        }
+    }
+
+    private void runCohortRecoveryProcedure() {
+        BallotNumber ballotNumber = communicator.getNextBallotNumber(leader);
+        Map<Long,Command> pastCommands = communicator.getPastOutcomes(
+                ledger.getLastExecutedRequest(), leader);
+
+        if (ballotNumber != null && pastCommands != null) {
+            ledger.logNextBallotNumber(ballotNumber);
+            if (pastCommands.size() > 0) {
+                log.info("Executing " + pastCommands.size() + " past commands borrowed from the leader");
+                for (Map.Entry<Long,Command> entry : pastCommands.entrySet()) {
+                    onDecide(new DecideEvent(entry.getKey(), entry.getValue()));
+                }
+            }
+        } else {
+            log.warn("Unable to get the necessary metadata from leader");
             startElection();
         }
     }
@@ -426,8 +448,8 @@ public class PaxosAgent {
             }
             electionLock.notifyAll();
 
+            protocolState = PaxosProtocolState.IDLE;
             if (leader.isLocal()) {
-                protocolState = PaxosProtocolState.IDLE;
                 exec.submit(new Runnable() {
                     @Override
                     public void run() {
@@ -435,6 +457,7 @@ public class PaxosAgent {
                     }
                 });
             } else {
+                runCohortRecoveryProcedure();
                 setAgentMode(PaxosAgentMode.COHORT);
             }
         }
@@ -443,6 +466,27 @@ public class PaxosAgent {
     public boolean onLeaderQuery() {
         synchronized (electionLock) {
             return leader != null && leader.isLocal();
+        }
+    }
+
+    public Map<Long,Command> getPastOutcomes(long requestNumber) {
+        RequestHistory history = ledger.getRequestHistory(requestNumber);
+        return history.getPrevOutcomes();
+    }
+
+    public BallotNumber getNextBallotNumber() {
+        return ledger.getNextBallotNumber();
+    }
+
+    private void waitForStabilization() {
+        synchronized (stateMachineLock) {
+            while (agentMode != PaxosAgentMode.LEADER &&
+                    agentMode != PaxosAgentMode.COHORT) {
+                try {
+                    stateMachineLock.wait();
+                } catch (InterruptedException ignored) {
+                }
+            }
         }
     }
 

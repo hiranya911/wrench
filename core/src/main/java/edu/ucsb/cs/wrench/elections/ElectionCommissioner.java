@@ -95,7 +95,6 @@ public class ElectionCommissioner implements Runnable {
         log.info("Checking if a leader exists");
         for (Member member : config.getMembers()) {
             if (!member.isLocal() && communicator.sendLeaderQueryMessage(member)) {
-                log.info("Found existing leader: " + member.getProcessId());
                 return member;
             }
         }

@@ -31,6 +31,10 @@ public class TxPrepareCommand extends Command {
         }
     }
 
+    public String getData() {
+        return data;
+    }
+
     @Override
     public String toString() {
         return TX_PREPARE + transactionId + " " + data;

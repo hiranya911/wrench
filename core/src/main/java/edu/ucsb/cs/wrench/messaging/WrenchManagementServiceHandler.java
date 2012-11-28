@@ -1,11 +1,13 @@
 package edu.ucsb.cs.wrench.messaging;
 
+import edu.ucsb.cs.wrench.commands.Command;
 import edu.ucsb.cs.wrench.commands.CommandFactory;
 import edu.ucsb.cs.wrench.commands.TxPrepareCommand;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.paxos.*;
 import org.apache.thrift.TException;
 
+import java.util.HashMap;
 import java.util.Map;
 
 public class WrenchManagementServiceHandler implements WrenchManagementService.Iface {
@@ -91,6 +93,22 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
     @Override
     public void notifyAppend(String transactionId) throws TException {
 
+    }
+
+    @Override
+    public Map<Long,String> getPastOutcomes(long lastRequest) throws TException {
+        Map<Long,Command> commands = agent.getPastOutcomes(lastRequest);
+        Map<Long,String> pastOutcomes = new HashMap<Long, String>();
+        for (Map.Entry<Long,Command> entry : commands.entrySet()) {
+            pastOutcomes.put(entry.getKey(), entry.getValue().toString());
+        }
+        return pastOutcomes;
+    }
+
+    @Override
+    public BallotNumber getNextBallot() throws TException {
+        edu.ucsb.cs.wrench.paxos.BallotNumber ballotNumber = agent.getNextBallotNumber();
+        return new BallotNumber(ballotNumber.getNumber(), ballotNumber.getProcessId());
     }
 
     private edu.ucsb.cs.wrench.paxos.BallotNumber toPaxosBallotNumber(BallotNumber ballotNumber) {

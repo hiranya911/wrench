@@ -27,6 +27,10 @@ service WrenchManagementService {
 
   bool append(1:string transactionId, 2:string data),
 
-  void notifyAppend(1:string transactionId)
+  void notifyAppend(1:string transactionId),
+
+  map<i64,string> getPastOutcomes(1:i64 lastRequest),
+
+  BallotNumber getNextBallot()
 }
 

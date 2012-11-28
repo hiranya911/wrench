@@ -1,6 +1,9 @@
 package edu.ucsb.cs.wrench.messaging;
 
+import edu.ucsb.cs.wrench.WrenchException;
 import edu.ucsb.cs.wrench.commands.Command;
+import edu.ucsb.cs.wrench.commands.CommandFactory;
+import edu.ucsb.cs.wrench.commands.TxPrepareCommand;
 import edu.ucsb.cs.wrench.config.Member;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.paxos.AcceptedEvent;
@@ -165,6 +168,60 @@ public class WrenchCommunicator {
             }
         }
     }
+
+    public boolean relayCommand(Command command, Member member) {
+        TTransport transport = new TSocket(member.getHostname(), member.getPort());
+        try {
+            WrenchManagementService.Client client = getClient(transport);
+            if (command instanceof TxPrepareCommand) {
+                TxPrepareCommand prepare = (TxPrepareCommand) command;
+                return client.append(prepare.getTransactionId(), prepare.getData());
+            } else {
+                return false;
+            }
+        } catch (TTransportException e) {
+            handleException(member, e);
+            throw new WrenchException("Error contacting the member: " + member.getProcessId(), e);
+        } catch (TException e) {
+            handleException(member, e);
+            return false;
+        } finally {
+            close(transport);
+        }
+    }
+
+    public Map<Long,Command> getPastOutcomes(long lastRequest, Member member) {
+        TTransport transport = new TSocket(member.getHostname(), member.getPort());
+        try {
+            WrenchManagementService.Client client = getClient(transport);
+            Map<Long,String> commands = client.getPastOutcomes(lastRequest);
+            Map<Long,Command> pastOutcomes = new HashMap<Long, Command>();
+            for (Map.Entry<Long,String> entry : commands.entrySet()) {
+                pastOutcomes.put(entry.getKey(), CommandFactory.createCommand(entry.getValue()));
+            }
+            return pastOutcomes;
+        } catch (TException e) {
+            handleException(member, e);
+            return null;
+        } finally {
+            close(transport);
+        }
+    }
+
+    public BallotNumber getNextBallotNumber(Member member) {
+        TTransport transport = new TSocket(member.getHostname(), member.getPort());
+        try {
+            WrenchManagementService.Client client = getClient(transport);
+            edu.ucsb.cs.wrench.messaging.BallotNumber ballot = client.getNextBallot();
+            return new BallotNumber(ballot.getNumber(), ballot.getProcessId());
+        } catch (TException e) {
+            handleException(member, e);
+            return null;
+        } finally {
+            close(transport);
+        }
+    }
+
 
     private edu.ucsb.cs.wrench.messaging.BallotNumber toThriftBallotNumber(BallotNumber bal) {
         if (bal == null) {
