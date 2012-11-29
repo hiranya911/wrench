@@ -108,6 +108,9 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
     @Override
     public BallotNumber getNextBallot() throws TException {
         edu.ucsb.cs.wrench.paxos.BallotNumber ballotNumber = agent.getNextBallotNumber();
+        if (ballotNumber == null) {
+            return new BallotNumber(-1, WrenchCommunicator.NULL_STRING);
+        }
         return new BallotNumber(ballotNumber.getNumber(), ballotNumber.getProcessId());
     }
 

@@ -24,4 +24,4 @@ do
     WRENCH_CLASSPATH=$WRENCH_CLASSPATH:$f
 done
 
-java -Duser.dir=$WRENCH_HOME -Dwrench.config.file=$WRENCH_HOME/conf/wrench.properties -classpath $WRENCH_CLASSPATH edu.ucsb.cs.wrench.Main $*
+java -Duser.dir=$WRENCH_HOME -Dwrench.config.file=$WRENCH_HOME/conf/wrench.properties -classpath $WRENCH_CLASSPATH edu.ucsb.cs.wrench.GradesDataServer $*

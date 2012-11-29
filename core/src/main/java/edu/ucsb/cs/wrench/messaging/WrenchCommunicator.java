@@ -202,7 +202,7 @@ public class WrenchCommunicator {
             return pastOutcomes;
         } catch (TException e) {
             handleException(member, e);
-            return null;
+            throw new WrenchException("Error contacting the remote member", e);
         } finally {
             close(transport);
         }
@@ -213,15 +213,17 @@ public class WrenchCommunicator {
         try {
             WrenchManagementService.Client client = getClient(transport);
             edu.ucsb.cs.wrench.messaging.BallotNumber ballot = client.getNextBallot();
+            if (ballot.getNumber() == -1 && ballot.getProcessId().equals(NULL_STRING)) {
+                return null;
+            }
             return new BallotNumber(ballot.getNumber(), ballot.getProcessId());
         } catch (TException e) {
             handleException(member, e);
-            return null;
+            throw new WrenchException("Error contacting the remote member", e);
         } finally {
             close(transport);
         }
     }
-
 
     private edu.ucsb.cs.wrench.messaging.BallotNumber toThriftBallotNumber(BallotNumber bal) {
         if (bal == null) {

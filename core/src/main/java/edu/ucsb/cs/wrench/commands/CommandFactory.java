@@ -6,6 +6,7 @@ public abstract class CommandFactory {
 
     private static CommandFactory[] factories = {
         new TxPrepareCommandFactory(),
+        new TxCommitCommandFactory(),
         new NullCommandFactory()
     };
 

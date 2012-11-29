@@ -24,6 +24,7 @@ public class TxPrepareCommand extends Command {
         File file = new File(tempDir, transactionId + ".dat");
         try {
             FileUtils.writeStringToFile(file, data);
+            log.info("Transaction " + transactionId + " PREPARED");
             return true;
         } catch (IOException e) {
             log.error("Error writing to the file system", e);

@@ -20,6 +20,8 @@ public class WrenchConfiguration {
         new Member("DefaultNode", "localhost", 9090, true)
     };
 
+    private Member[] peers = { };
+
     private Properties properties;
 
     private String wrenchHome;
@@ -28,6 +30,7 @@ public class WrenchConfiguration {
         this.properties = properties;
         this.wrenchHome = System.getProperty("wrench.home", System.getProperty("user.dir"));
         Map<String,Member> membership = new HashMap<String, Member>();
+        Map<String,Member> peerMembership = new HashMap<String, Member>();
         boolean localSeen = false;
         for (String key : properties.stringPropertyNames()) {
             if (key.startsWith("wrench.member.")) {
@@ -54,9 +57,25 @@ public class WrenchConfiguration {
                         localSeen = true;
                     }
                 }
+            } else if (key.startsWith("wrench.peer.")) {
+                String[] segments = key.split("\\.");
+                String processId = segments[2];
+                Member member;
+                if (peerMembership.containsKey(processId)) {
+                    member = peerMembership.get(processId);
+                } else {
+                    member = new Member(processId);
+                    peerMembership.put(processId, member);
+                }
+                if ("host".equals(segments[3])) {
+                    member.setHostname(properties.getProperty(key));
+                } else if ("port".equals(segments[3])) {
+                    member.setPort(Integer.parseInt(properties.getProperty(key)));
+                }
             }
         }
         this.members = membership.values().toArray(new Member[membership.size()]);
+        this.peers = peerMembership.values().toArray(new Member[peerMembership.size()]);
     }
 
     public String getWrenchHome() {
@@ -65,6 +84,10 @@ public class WrenchConfiguration {
 
     public Member[] getMembers() {
         return members;
+    }
+
+    public Member[] getPeers() {
+        return peers;
     }
 
     public Member getLocalMember() {
@@ -82,6 +105,18 @@ public class WrenchConfiguration {
 
     public String getTempDirectoryPath() {
         return properties.getProperty("wrench.temp.dir", "temp");
+    }
+
+    public String getDBDirectoryPath() {
+        return properties.getProperty("wrench.db.dir", "temp");
+    }
+
+    public String getDataFileName() {
+        return properties.getProperty("wrench.data.file", "DATAFILE.txt");
+    }
+
+    public void setDataFileName(String fileName) {
+        properties.setProperty("wrench.data.file", fileName);
     }
 
     public int getLeaderElectionTimeout() {

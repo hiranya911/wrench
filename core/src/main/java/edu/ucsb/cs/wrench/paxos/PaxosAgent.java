@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class PaxosAgent {
+public abstract class PaxosAgent {
 
     private static final Log log = LogFactory.getLog(PaxosAgent.class);
 
@@ -110,6 +110,8 @@ public class PaxosAgent {
             }
         }
     }
+
+    public abstract void onDecision(long requestNumber, Command command);
 
     public void enqueue(PaxosEvent event) {
         synchronized (eventQueue) {
@@ -255,6 +257,7 @@ public class PaxosAgent {
             log.info("Received DECIDE with request number: " + requestNumber +
                     " and command: " + command);
             ledger.logOutcome(requestNumber, command);
+            onDecision(requestNumber, command);
             executeCommands(requestNumber, command);
         }
     }
@@ -263,10 +266,19 @@ public class PaxosAgent {
         commands.put(requestNumber, command);
         while (true) {
             long next = ledger.getLastExecutedRequest() + 1;
-            Command cmd = commands.remove(next);
-            if (cmd != null && cmd.execute()) {
-                log.info("Executed request: " + next + ", command: " + cmd);
-                ledger.logExecution(next);
+            Command cmd = commands.get(next);
+            if (cmd != null) {
+                if (cmd.execute()) {
+                    log.info("Executed request: " + next + ", command: " + cmd);
+                    ledger.logExecution(next);
+                    commands.remove(next);
+                } else {
+                    log.fatal("Failed to execute command: " + cmd + " - Retrying");
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException ignored) {
+                    }
+                }
             } else {
                 break;
             }
@@ -375,20 +387,22 @@ public class PaxosAgent {
     }
 
     private void runCohortRecoveryProcedure() {
-        BallotNumber ballotNumber = communicator.getNextBallotNumber(leader);
-        Map<Long,Command> pastCommands = communicator.getPastOutcomes(
-                ledger.getLastExecutedRequest(), leader);
+        try {
+            BallotNumber ballotNumber = communicator.getNextBallotNumber(leader);
+            Map<Long,Command> pastCommands = communicator.getPastOutcomes(
+                    ledger.getLastExecutedRequest(), leader);
 
-        if (ballotNumber != null && pastCommands != null) {
-            ledger.logNextBallotNumber(ballotNumber);
-            if (pastCommands.size() > 0) {
-                log.info("Executing " + pastCommands.size() + " past commands borrowed from the leader");
-                for (Map.Entry<Long,Command> entry : pastCommands.entrySet()) {
-                    onDecide(new DecideEvent(entry.getKey(), entry.getValue()));
+            if (ballotNumber != null && pastCommands != null) {
+                ledger.logNextBallotNumber(ballotNumber);
+                if (pastCommands.size() > 0) {
+                    log.info("Executing " + pastCommands.size() + " past commands borrowed from the leader");
+                    for (Map.Entry<Long,Command> entry : pastCommands.entrySet()) {
+                        onDecide(new DecideEvent(entry.getKey(), entry.getValue()));
+                    }
                 }
             }
-        } else {
-            log.warn("Unable to get the necessary metadata from leader");
+        } catch (WrenchException e) {
+            log.warn("Unable to reach the leader to obtain Paxos metadata", e);
             startElection();
         }
     }

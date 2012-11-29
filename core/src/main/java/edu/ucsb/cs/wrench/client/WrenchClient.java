@@ -25,13 +25,16 @@ public class WrenchClient {
         @Override
         public void run() {
             try {
-                TTransport transport = new TSocket("localhost", 9092);
+                TTransport transport = new TSocket("localhost", 9091);
                 transport.open();
                 TProtocol protocol = new TBinaryProtocol(transport);
                 WrenchManagementService.Client client = new WrenchManagementService.Client(protocol);
-                System.out.println(client.append(UUID.randomUUID().toString(), getName()));
+                for (int i = 0; i < 100; i++) {
+                    System.out.println(client.append(UUID.randomUUID().toString(), getName()));
+                    Thread.sleep(100);
+                }
                 transport.close();
-            } catch (TException e) {
+            } catch (Exception e) {
                 e.printStackTrace();
             }
         }
