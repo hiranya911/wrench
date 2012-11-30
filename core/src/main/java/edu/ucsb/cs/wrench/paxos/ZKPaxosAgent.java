@@ -3,11 +3,13 @@ package edu.ucsb.cs.wrench.paxos;
 import edu.ucsb.cs.wrench.WrenchException;
 import edu.ucsb.cs.wrench.commands.Command;
 import edu.ucsb.cs.wrench.commands.NullCommand;
+import edu.ucsb.cs.wrench.commands.TxCommitCommand;
 import edu.ucsb.cs.wrench.config.Member;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.messaging.WrenchCommunicator;
 import edu.ucsb.cs.wrench.messaging.WrenchManagementService;
 import edu.ucsb.cs.wrench.messaging.WrenchManagementServiceHandler;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.thrift.server.TServer;
@@ -22,6 +24,7 @@ import org.apache.zookeeper.server.quorum.QuorumPeerMain;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
@@ -31,21 +34,21 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCallback, AgentService {
 
-    private static final Log log = LogFactory.getLog(ZKPaxosAgent.class);
+    protected final Log log = LogFactory.getLog(this.getClass());
 
     private static final String ELECTION_NODE = "/ELECTION";
 
     private ExecutorService zkService = Executors.newSingleThreadExecutor();
     private ZooKeeper zkClient;
     private WrenchConfiguration config = WrenchConfiguration.getConfiguration();
-    private Member leader;
+    protected Member leader;
     private PaxosLedger ledger;
     private TServer server;
-    private WrenchCommunicator communicator = new WrenchCommunicator();
+    protected WrenchCommunicator communicator = new WrenchCommunicator();
     private Set<AckEvent> ackStore = new HashSet<AckEvent>();
     private Map<Long,AtomicInteger> acceptCount = new ConcurrentHashMap<Long, AtomicInteger>();
     private Future paxosTask;
-    private ExecutorService exec = Executors.newCachedThreadPool();
+    protected ExecutorService exec = Executors.newCachedThreadPool();
     private final Object prepareLock = new Object();
     private final Object stateMachineLock = new Object();
     private final Queue<PaxosEvent> eventQueue = new ConcurrentLinkedQueue<PaxosEvent>();
@@ -53,8 +56,10 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
     private PaxosWorker paxosWorker = new PaxosWorker();
     private PaxosProtocolState protocolState = PaxosProtocolState.IDLE;
     private PaxosAgentMode agentMode = PaxosAgentMode.UNDEFINED;
-    private AtomicLong nextRequest = new AtomicLong(1);
+    private final AtomicLong nextRequest = new AtomicLong(1);
+    private AtomicLong nextLineNumber = new AtomicLong(1);
     private boolean acceptRequests = false;
+    protected final Set<String> pendingTransactions = new HashSet<String>();
 
     public void start() {
         Properties properties = new Properties();
@@ -152,27 +157,37 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
 
     public boolean executeClientRequest(final Command command) {
         while (true) {
-            if (!acceptRequests) {
-                return false;
-            }
-
             synchronized (stateMachineLock) {
                 while (agentMode != PaxosAgentMode.COHORT && agentMode != PaxosAgentMode.LEADER) {
                     try {
-                        stateMachineLock.wait();
+                        stateMachineLock.wait(5000);
                     } catch (InterruptedException ignored) {
                     }
                 }
             }
 
-            final long requestNumber = nextRequest.getAndIncrement();
+            if (!acceptRequests) {
+                log.info("Not accepting requests at the moment");
+                return false;
+            }
+
+            final long requestNumber;
+            synchronized (nextRequest) {
+                requestNumber = nextRequest.getAndIncrement();
+                if (command instanceof TxCommitCommand) {
+                    TxCommitCommand commit = (TxCommitCommand) command;
+                    if (commit.getLineNumber() == -1) {
+                        commit.setLineNumber(nextLineNumber.getAndIncrement());
+                    }
+                }
+            }
             final AtomicBoolean done = new AtomicBoolean(false);
             if (leader.isLocal()) {
                 exec.submit(new Runnable() {
                     @Override
                     public void run() {
-                    runAcceptPhase(requestNumber, command);
-                    done.compareAndSet(false, true);
+                        runAcceptPhase(requestNumber, command);
+                        done.compareAndSet(false, true);
                     }
                 });
                 log.info("Submitted request number: " + requestNumber);
@@ -341,6 +356,8 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                     runPreparePhase();
                 } else if (init) {
                     runCohortRecoveryProcedure();
+                } else {
+                    setAgentMode(PaxosAgentMode.COHORT);
                 }
             } else if (leader.isLocal()) {
                 setAgentMode(PaxosAgentMode.LEADER);
@@ -435,9 +452,20 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
         log.info("Successfully finished the Paxos recovery (view change) mode");
         long last = ledger.getLargestDecidedRequest();
         if (last < 0) {
-            nextRequest = new AtomicLong(1);
+            nextRequest.set(1);
         }  else {
-            nextRequest = new AtomicLong(last + 1);
+            nextRequest.set(last + 1);
+        }
+
+        try {
+            File dbDir = new File(config.getWrenchHome(), config.getDBDirectoryPath());
+            File dataFile = new File(dbDir, config.getDataFileName());
+            List<String> lines = FileUtils.readLines(dataFile);
+            nextLineNumber.set(lines.size() + 1);
+        } catch (FileNotFoundException e) {
+            nextLineNumber.set(1);
+        } catch (IOException e) {
+            handleFatalException("Unrecoverable error while reading from file system", e);
         }
         setAgentMode(PaxosAgentMode.LEADER);
     }
@@ -487,10 +515,31 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
         acceptCount.remove(requestNumber);
         if (config.isMajority(votes.get())) {
             log.info("Request number " + requestNumber + " is fully dealt with");
-            onDecide(new DecideEvent(lastTried, requestNumber, command));
             communicator.sendDecide(lastTried, requestNumber, command);
+            onDecide(new DecideEvent(lastTried, requestNumber, command));
         } else {
             handleFatalException("Failed to obtain majority consensus", null);
+        }
+    }
+
+    public void onAppendNotification(String transactionId) {
+        if (leader.isLocal()) {
+            synchronized (pendingTransactions) {
+                pendingTransactions.add(transactionId);
+                pendingTransactions.notifyAll();
+            }
+        } else {
+            communicator.notifyPrepare(transactionId, leader);
+        }
+    }
+
+    public boolean onAppendCommit(String transactionId, long lineNumber) {
+        if (leader.isLocal()) {
+            TxCommitCommand commit = new TxCommitCommand(transactionId);
+            commit.setLineNumber(lineNumber);
+            return executeClientRequest(new TxCommitCommand(transactionId));
+        } else {
+            return communicator.notifyCommit(transactionId, lineNumber, leader);
         }
     }
 

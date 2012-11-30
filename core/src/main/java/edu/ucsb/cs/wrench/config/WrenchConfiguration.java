@@ -1,6 +1,7 @@
 package edu.ucsb.cs.wrench.config;
 
 import edu.ucsb.cs.wrench.WrenchException;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -118,6 +119,13 @@ public class WrenchConfiguration {
 
     public void setDataFileName(String fileName) {
         properties.setProperty("wrench.data.file", fileName);
+        File dbDir = new File(getWrenchHome(), getDBDirectoryPath());
+        File dataFile = new File(dbDir, fileName);
+        try {
+            FileUtils.touch(dataFile);
+        } catch (IOException e) {
+            throw new WrenchException("Cannot initialize the data file", e);
+        }
     }
 
     public int getLeaderElectionTimeout() {

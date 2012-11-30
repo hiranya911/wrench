@@ -12,7 +12,12 @@
     </fileSets>
     <files>
         <file>
-            <source>src/main/assembly/run.sh</source>
+            <source>src/main/assembly/run-grades.sh</source>
+            <outputDirectory>wrench-${project.version}/bin</outputDirectory>
+            <fileMode>775</fileMode>
+        </file>
+        <file>
+            <source>src/main/assembly/run-stats.sh</source>
             <outputDirectory>wrench-${project.version}/bin</outputDirectory>
             <fileMode>775</fileMode>
         </file>

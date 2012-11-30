@@ -11,11 +11,11 @@ public class TxCommitCommand extends Command {
 
     public static final String TX_COMMIT = "TX_COMMIT ";
 
-    private long lineNumber;
+    private long lineNumber = -1L;
+    private boolean committed = false;
 
-    public TxCommitCommand(String transactionId, long lineNumber) {
+    public TxCommitCommand(String transactionId) {
         super(transactionId);
-        this.lineNumber = lineNumber;
     }
 
     @Override
@@ -32,12 +32,28 @@ public class TxCommitCommand extends Command {
             if (lineNumber == lines.size() + 1) {
                 FileUtils.writeStringToFile(dataFile, data + "\n", true);
                 log.info("Transaction " + transactionId + " COMMITTED");
+                synchronized (this) {
+                    committed = true;
+                    this.notifyAll();
+                }
                 return true;
             }
         } catch (IOException e) {
-            log.fatal("Error while performing the file system operations");
+            log.fatal("Error while performing the file system operations", e);
         }
         return false;
+    }
+
+    public void setLineNumber(long lineNumber) {
+        this.lineNumber = lineNumber;
+    }
+
+    public boolean isCommitted() {
+        return committed;
+    }
+
+    public long getLineNumber() {
+        return lineNumber;
     }
 
     @Override

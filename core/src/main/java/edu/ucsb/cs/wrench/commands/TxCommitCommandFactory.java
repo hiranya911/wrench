@@ -7,8 +7,9 @@ public class TxCommitCommandFactory extends CommandFactory {
         if (str.startsWith(TxCommitCommand.TX_COMMIT)) {
             String segment = str.substring(TxCommitCommand.TX_COMMIT.length());
             int delimiter = segment.indexOf(' ');
-            return new TxCommitCommand(segment.substring(0, delimiter),
-                    Long.parseLong(segment.substring(delimiter + 1)));
+            TxCommitCommand commit = new TxCommitCommand(segment.substring(0, delimiter));
+            commit.setLineNumber(Long.parseLong(segment.substring(delimiter + 1)));
+            return commit;
         }
         return null;
     }

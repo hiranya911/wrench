@@ -225,6 +225,32 @@ public class WrenchCommunicator {
         }
     }
 
+    public void notifyPrepare(String transactionId, Member member) {
+        TTransport transport = new TSocket(member.getHostname(), member.getPort());
+        try {
+            WrenchManagementService.Client client = getClient(transport);
+            client.notifyPrepare(transactionId);
+        } catch (TException e) {
+            handleException(member, e);
+            throw new WrenchException("Error contacting the remote member", e);
+        } finally {
+            close(transport);
+        }
+    }
+
+    public boolean notifyCommit(String transactionId, long lineNumber, Member member) {
+        TTransport transport = new TSocket(member.getHostname(), member.getPort());
+        try {
+            WrenchManagementService.Client client = getClient(transport);
+            return client.notifyCommit(transactionId, lineNumber);
+        } catch (TException e) {
+            handleException(member, e);
+            throw new WrenchException("Error contacting the remote member", e);
+        } finally {
+            close(transport);
+        }
+    }
+
     private edu.ucsb.cs.wrench.messaging.BallotNumber toThriftBallotNumber(BallotNumber bal) {
         if (bal == null) {
             return new edu.ucsb.cs.wrench.messaging.BallotNumber(-1, NULL_STRING);

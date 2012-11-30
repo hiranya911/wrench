@@ -91,8 +91,13 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
     }
 
     @Override
-    public void notifyAppend(String transactionId) throws TException {
+    public void notifyPrepare(String transactionId) throws TException {
+        agent.onAppendNotification(transactionId);
+    }
 
+    @Override
+    public boolean notifyCommit(String transactionId, long lineNumber) throws TException {
+        return agent.onAppendCommit(transactionId, lineNumber);
     }
 
     @Override
