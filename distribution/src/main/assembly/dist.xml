@@ -20,6 +20,14 @@
             <source>src/main/assembly/wrench.properties</source>
             <outputDirectory>wrench-${project.version}/conf</outputDirectory>
         </file>
+        <file>
+            <source>src/main/assembly/zk.properties</source>
+            <outputDirectory>wrench-${project.version}/conf</outputDirectory>
+        </file>
+        <file>
+            <source>src/main/assembly/log4j.properties</source>
+            <outputDirectory>wrench-${project.version}/lib</outputDirectory>
+        </file>
     </files>
     <dependencySets>
         <dependencySet>

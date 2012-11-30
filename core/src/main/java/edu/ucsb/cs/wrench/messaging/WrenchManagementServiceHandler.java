@@ -7,14 +7,14 @@ import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.paxos.*;
 import org.apache.thrift.TException;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.TreeMap;
 
 public class WrenchManagementServiceHandler implements WrenchManagementService.Iface {
 
-    private PaxosAgent agent;
+    private AgentService agent;
 
-    public WrenchManagementServiceHandler(PaxosAgent agent) {
+    public WrenchManagementServiceHandler(AgentService agent) {
         this.agent = agent;
     }
 
@@ -98,7 +98,7 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
     @Override
     public Map<Long,String> getPastOutcomes(long lastRequest) throws TException {
         Map<Long,Command> commands = agent.getPastOutcomes(lastRequest);
-        Map<Long,String> pastOutcomes = new HashMap<Long, String>();
+        Map<Long,String> pastOutcomes = new TreeMap<Long, String>();
         for (Map.Entry<Long,Command> entry : commands.entrySet()) {
             pastOutcomes.put(entry.getKey(), entry.getValue().toString());
         }

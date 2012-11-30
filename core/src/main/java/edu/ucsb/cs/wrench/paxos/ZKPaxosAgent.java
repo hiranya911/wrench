@@ -5,7 +5,6 @@ import edu.ucsb.cs.wrench.commands.Command;
 import edu.ucsb.cs.wrench.commands.NullCommand;
 import edu.ucsb.cs.wrench.config.Member;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
-import edu.ucsb.cs.wrench.elections.ElectionCommissioner;
 import edu.ucsb.cs.wrench.messaging.WrenchCommunicator;
 import edu.ucsb.cs.wrench.messaging.WrenchManagementService;
 import edu.ucsb.cs.wrench.messaging.WrenchManagementServiceHandler;
@@ -16,7 +15,13 @@ import org.apache.thrift.server.TThreadPoolServer;
 import org.apache.thrift.transport.TServerSocket;
 import org.apache.thrift.transport.TServerTransport;
 import org.apache.thrift.transport.TTransportException;
+import org.apache.zookeeper.*;
+import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig;
+import org.apache.zookeeper.server.quorum.QuorumPeerMain;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
@@ -24,43 +29,52 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-public abstract class PaxosAgent implements AgentService {
+public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCallback, AgentService {
 
-    private static final Log log = LogFactory.getLog(PaxosAgent.class);
+    private static final Log log = LogFactory.getLog(ZKPaxosAgent.class);
 
-    private static final int INIT = 0;
-    private static final int IN_PROGRESS = 1;
-    private static final int SUCCESS = 2;
-    private static final int FAILED = 3;
+    private static final String ELECTION_NODE = "/ELECTION";
 
-    private PaxosLedger ledger;
-    private Member leader;
-    private TServer server;
-
-    private ExecutorService exec = Executors.newCachedThreadPool();
-    private WrenchCommunicator communicator = new WrenchCommunicator();
-    private ElectionCommissioner electionCommissioner = new ElectionCommissioner(communicator);
+    private ExecutorService zkService = Executors.newSingleThreadExecutor();
+    private ZooKeeper zkClient;
     private WrenchConfiguration config = WrenchConfiguration.getConfiguration();
-    private AtomicBoolean electionInProgress = new AtomicBoolean(false);
+    private Member leader;
+    private PaxosLedger ledger;
+    private TServer server;
+    private WrenchCommunicator communicator = new WrenchCommunicator();
     private Set<AckEvent> ackStore = new HashSet<AckEvent>();
     private Map<Long,AtomicInteger> acceptCount = new ConcurrentHashMap<Long, AtomicInteger>();
-
     private Future paxosTask;
-
+    private ExecutorService exec = Executors.newCachedThreadPool();
     private final Object prepareLock = new Object();
-    private final Object electionLock = new Object();
     private final Object stateMachineLock = new Object();
-
     private final Queue<PaxosEvent> eventQueue = new ConcurrentLinkedQueue<PaxosEvent>();
     private Map<Long,Command> commands = new ConcurrentHashMap<Long, Command>();
-
     private PaxosWorker paxosWorker = new PaxosWorker();
     private PaxosProtocolState protocolState = PaxosProtocolState.IDLE;
     private PaxosAgentMode agentMode = PaxosAgentMode.UNDEFINED;
-
     private AtomicLong nextRequest = new AtomicLong(1);
+    private boolean acceptRequests = false;
 
     public void start() {
+        Properties properties = new Properties();
+        String configPath = System.getProperty("wrench.config.dir", "conf");
+        String dataPath = System.getProperty("wrench.zk.dir", "zk");
+        File configFile = new File(configPath, "zk.properties");
+        try {
+            properties.load(new FileInputStream(configFile));
+            properties.setProperty("dataDir", dataPath);
+            QuorumPeerConfig config = new QuorumPeerConfig();
+            config.parseProperties(properties);
+            ZKServer server = new ZKServer(config);
+            zkService.submit(server);
+            log.info("ZooKeeper server started");
+        } catch (IOException e) {
+            handleException("Error loading the ZooKeeper configuration", e);
+        } catch (QuorumPeerConfig.ConfigException e) {
+            handleException("Error loading the ZooKeeper configuration", e);
+        }
+
         try {
             ledger = new PaxosLedger();
         } catch (IOException e) {
@@ -99,16 +113,32 @@ public abstract class PaxosAgent implements AgentService {
 
         // Start the Paxos event processor
         paxosTask = exec.submit(paxosWorker);
-        synchronized (electionLock) {
-            leader = electionCommissioner.discoverLeader();
-            if (leader != null) {
-                log.info("Discovered existing leader: " + leader.getProcessId());
-                runCohortRecoveryProcedure();
-                setAgentMode(PaxosAgentMode.COHORT);
-            } else {
-                startElection();
+
+        String connection = "localhost:" + properties.getProperty("clientPort");
+        try {
+            zkClient = new ZooKeeper(connection, 5000, this);
+        } catch (IOException e) {
+            handleException("Error initializing the ZooKeeper client", e);
+        }
+    }
+
+    public void stop() {
+        server.stop();
+        System.out.println("Stopped the Thrift service");
+        paxosWorker.stop();
+        synchronized (stateMachineLock) {
+            stateMachineLock.notifyAll();
+        }
+        while (paxosTask != null && !paxosTask.isDone()) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException ignored) {
             }
         }
+        System.out.println("Stopped Paxos task");
+        exec.shutdownNow();
+        zkService.shutdownNow();
+        System.out.println("Program terminated");
     }
 
     public abstract void onDecision(long requestNumber, Command command);
@@ -122,60 +152,48 @@ public abstract class PaxosAgent implements AgentService {
 
     public boolean executeClientRequest(final Command command) {
         while (true) {
-            waitForStabilization();
+            if (!acceptRequests) {
+                return false;
+            }
+
+            synchronized (stateMachineLock) {
+                while (agentMode != PaxosAgentMode.COHORT && agentMode != PaxosAgentMode.LEADER) {
+                    try {
+                        stateMachineLock.wait();
+                    } catch (InterruptedException ignored) {
+                    }
+                }
+            }
+
             final long requestNumber = nextRequest.getAndIncrement();
-            final AtomicInteger state = new AtomicInteger(INIT);
+            final AtomicBoolean done = new AtomicBoolean(false);
             if (leader.isLocal()) {
                 exec.submit(new Runnable() {
                     @Override
                     public void run() {
-                        state.compareAndSet(INIT, IN_PROGRESS);
-                        if (!runAcceptPhase(requestNumber, command)) {
-                            state.compareAndSet(IN_PROGRESS, FAILED);
-                        } else {
-                            state.compareAndSet(IN_PROGRESS, SUCCESS);
-                        }
+                    runAcceptPhase(requestNumber, command);
+                    done.compareAndSet(false, true);
                     }
                 });
                 log.info("Submitted request number: " + requestNumber);
 
-                while (state.get() <= IN_PROGRESS) {
+                while (!done.get()) {
                     try {
                         Thread.sleep(50);
                     } catch (InterruptedException ignored) {
                     }
                 }
 
-                if (state.get() == SUCCESS) {
-                    return true;
-                } else {
-                    log.info("Failed to push the proposal through - Possible multiple leaders!");
-                    startElection();
-                }
+                return true;
             } else {
                 log.info("Relaying the request to: " + leader.getProcessId());
                 try {
                     return communicator.relayCommand(command, leader);
                 } catch (WrenchException e) {
-                    startElection();
+                    log.error("Failed to relay the command to leader - Retrying", e);
                 }
             }
         }
-    }
-
-    public void stop() {
-        server.stop();
-        System.out.println("Stopped the Thrift service");
-        paxosWorker.stop();
-        while (paxosTask != null && !paxosTask.isDone()) {
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException ignored) {
-            }
-        }
-        System.out.println("Stopped Paxos task");
-        exec.shutdownNow();
-        System.out.println("Program terminated");
     }
 
     private void onPrepare(PrepareEvent prepare) {
@@ -285,6 +303,53 @@ public abstract class PaxosAgent implements AgentService {
         }
     }
 
+    @Override
+    public void process(WatchedEvent event) {
+        if (event.getType() == Event.EventType.None) {
+            handleNoneEvent(event);
+        } else if (event.getType() == Event.EventType.NodeChildrenChanged) {
+            zkClient.getChildren(ELECTION_NODE, true, this, null);
+        }
+    }
+
+    @Override
+    public void processResult(int code, String s, Object o, List<String> children) {
+        if (code != KeeperException.Code.OK.intValue()) {
+            log.error("Unexpected response code from ZooKeeper server");
+            return;
+        }
+
+        setAgentMode(PaxosAgentMode.VIEW_CHANGE);
+
+        long smallest = Long.MAX_VALUE;
+        String processId = null;
+        for (String child : children) {
+            int index = child.lastIndexOf('_');
+            long sequenceNumber = Long.parseLong(child.substring(index + 1));
+            if (sequenceNumber < smallest) {
+                smallest = sequenceNumber;
+                processId = child.substring(0, index);
+            }
+        }
+
+        if (processId != null) {
+            if (leader == null || !leader.getProcessId().equals(processId)) {
+                boolean init = leader == null;
+                log.info("Elected leader: " + processId);
+                leader = config.getMember(processId);
+                if (leader.isLocal()) {
+                    runPreparePhase();
+                } else if (init) {
+                    runCohortRecoveryProcedure();
+                }
+            } else if (leader.isLocal()) {
+                setAgentMode(PaxosAgentMode.LEADER);
+            } else {
+                setAgentMode(PaxosAgentMode.COHORT);
+            }
+        }
+    }
+
     private void runPreparePhase() {
         while (true) {
             synchronized (prepareLock) {
@@ -360,54 +425,49 @@ public abstract class PaxosAgent implements AgentService {
             }
         }
 
-        boolean allAccepted = true;
         if (pendingCommands.size() > 0) {
             for (Map.Entry<Long,Command> entry : pendingCommands.entrySet()) {
                 log.info("Running accept phase on: " + entry.getKey());
-                if (!runAcceptPhase(entry.getKey(), entry.getValue())) {
-                    allAccepted = false;
-                    break;
-                }
+                runAcceptPhase(entry.getKey(), entry.getValue());
             }
         }
 
-        if (allAccepted) {
-            log.info("Successfully finished the Paxos recovery (view change) mode");
-            long last = ledger.getLargestDecidedRequest();
-            if (last < 0) {
-                nextRequest = new AtomicLong(1);
-            }  else {
-                nextRequest = new AtomicLong(last + 1);
-            }
-            setAgentMode(PaxosAgentMode.LEADER);
-        } else {
-            log.warn("Some commands were not accepted - Possible multiple leaders!");
-            startElection();
+        log.info("Successfully finished the Paxos recovery (view change) mode");
+        long last = ledger.getLargestDecidedRequest();
+        if (last < 0) {
+            nextRequest = new AtomicLong(1);
+        }  else {
+            nextRequest = new AtomicLong(last + 1);
         }
+        setAgentMode(PaxosAgentMode.LEADER);
     }
 
     private void runCohortRecoveryProcedure() {
-        try {
-            BallotNumber ballotNumber = communicator.getNextBallotNumber(leader);
-            Map<Long,Command> pastCommands = communicator.getPastOutcomes(
-                    ledger.getLastExecutedRequest(), leader);
+        while (true) {
+            try {
+                BallotNumber ballotNumber = communicator.getNextBallotNumber(leader);
+                Map<Long,Command> pastCommands = communicator.getPastOutcomes(
+                        ledger.getLastExecutedRequest(), leader);
 
-            if (ballotNumber != null && pastCommands != null) {
-                ledger.logNextBallotNumber(ballotNumber);
-                if (pastCommands.size() > 0) {
-                    log.info("Executing " + pastCommands.size() + " past commands borrowed from the leader");
-                    for (Map.Entry<Long,Command> entry : pastCommands.entrySet()) {
-                        onDecide(new DecideEvent(entry.getKey(), entry.getValue()));
+                if (ballotNumber != null && pastCommands != null) {
+                    ledger.logNextBallotNumber(ballotNumber);
+                    if (pastCommands.size() > 0) {
+                        log.info("Executing " + pastCommands.size() +
+                                " past commands borrowed from the leader");
+                        for (Map.Entry<Long,Command> entry : pastCommands.entrySet()) {
+                            onDecide(new DecideEvent(entry.getKey(), entry.getValue()));
+                        }
                     }
                 }
+                setAgentMode(PaxosAgentMode.COHORT);
+                break;
+            } catch (WrenchException e) {
+                log.warn("Unable to reach the leader to obtain Paxos metadata", e);
             }
-        } catch (WrenchException e) {
-            log.warn("Unable to reach the leader to obtain Paxos metadata", e);
-            startElection();
         }
     }
 
-    private boolean runAcceptPhase(long requestNumber, Command command) {
+    private void runAcceptPhase(long requestNumber, Command command) {
         if (protocolState != PaxosProtocolState.POLLING) {
             throw new WrenchException("Invalid protocol state. Expected: " +
                     PaxosProtocolState.POLLING + ", Found: " + protocolState);
@@ -429,78 +489,47 @@ public abstract class PaxosAgent implements AgentService {
             log.info("Request number " + requestNumber + " is fully dealt with");
             onDecide(new DecideEvent(lastTried, requestNumber, command));
             communicator.sendDecide(lastTried, requestNumber, command);
-            return true;
         } else {
-            log.warn("Failed to obtain majority consensus");
-            return false;
+            handleFatalException("Failed to obtain majority consensus", null);
         }
     }
 
-    public void onElection() {
-        log.info("Received ELECTION request");
-        startElection();
-    }
-
-    private void startElection() {
-        if (electionInProgress.compareAndSet(false, true)) {
-            synchronized (electionLock) {
-                leader = null;
-                setAgentMode(PaxosAgentMode.VIEW_CHANGE);
-                exec.submit(electionCommissioner);
-            }
-        } else {
-            log.info("Election already in progress - Not starting another");
-        }
-    }
-
-    public void onVictory(Member winner) {
-        synchronized (electionLock) {
-            log.info("New leader elected - All hail: " + winner.getProcessId());
-            leader = winner;
-            if (electionInProgress.compareAndSet(true, false)) {
-                electionCommissioner.setWinner(winner);
-            }
-            electionLock.notifyAll();
-
-            protocolState = PaxosProtocolState.IDLE;
-            if (leader.isLocal()) {
-                exec.submit(new Runnable() {
-                    @Override
-                    public void run() {
-                        runPreparePhase();
-                    }
-                });
-            } else {
-                runCohortRecoveryProcedure();
-                setAgentMode(PaxosAgentMode.COHORT);
-            }
-        }
-    }
-
-    public boolean onLeaderQuery() {
-        synchronized (electionLock) {
-            return leader != null && leader.isLocal();
-        }
-    }
-
-    public Map<Long,Command> getPastOutcomes(long requestNumber) {
-        RequestHistory history = ledger.getRequestHistory(requestNumber);
-        return history.getPrevOutcomes();
-    }
-
-    public BallotNumber getNextBallotNumber() {
-        return ledger.getNextBallotNumber();
-    }
-
-    private void waitForStabilization() {
-        synchronized (stateMachineLock) {
-            while (agentMode != PaxosAgentMode.LEADER &&
-                    agentMode != PaxosAgentMode.COHORT) {
+    private void handleNoneEvent(WatchedEvent event) {
+        switch (event.getState()) {
+            case SyncConnected:
+                log.info("Successfully connected to the ZooKeeper server");
+                createElectionRoot();
+                zkClient.getChildren(ELECTION_NODE, true, this, null);
+                String zNode = ELECTION_NODE + "/" + config.getLocalMember().getProcessId() + "_";
                 try {
-                    stateMachineLock.wait();
-                } catch (InterruptedException ignored) {
+                    zkClient.create(zNode, new byte[0],
+                            ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+                } catch (Exception e) {
+                    handleFatalException("Failed to create z_node", e);
+                }
+                acceptRequests = true;
+                break;
+            case Disconnected:
+                log.warn("Lost the connection to ZooKeeper server");
+                acceptRequests = false;
+                break;
+            case Expired:
+                handleFatalException("Connection to ZooKeeper server expired", null);
+        }
+    }
+
+    private void createElectionRoot() {
+        try {
+            Stat stat = zkClient.exists(ELECTION_NODE, false);
+            if (stat == null) {
+                try {
+                    zkClient.create(ELECTION_NODE, new byte[0],
+                            ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+                } catch (KeeperException.NodeExistsException ignored) {
                 }
             }
+        } catch (Exception e) {
+            handleFatalException("Error while creating the ELECTION root", e);
         }
     }
 
@@ -508,6 +537,40 @@ public abstract class PaxosAgent implements AgentService {
         synchronized (stateMachineLock) {
             agentMode = mode;
             stateMachineLock.notifyAll();
+        }
+    }
+
+    private void handleException(String msg, Exception e) {
+        log.error(msg, e);
+        throw new WrenchException(msg, e);
+    }
+
+    private void handleFatalException(String msg, Exception e) {
+        if (e != null) {
+            log.fatal(msg, e);
+        } else {
+            log.fatal(msg);
+        }
+        System.exit(1);
+    }
+
+    private class ZKServer implements Runnable {
+
+        private QuorumPeerConfig config;
+        private QuorumPeerMain peer;
+
+        private ZKServer(QuorumPeerConfig config) {
+            this.config = config;
+            this.peer = new QuorumPeerMain();
+        }
+
+        @Override
+        public void run() {
+            try {
+                peer.runFromConfig(config);
+            } catch (IOException e) {
+                handleFatalException("Fatal error encountered in ZooKeeper server", e);
+            }
         }
     }
 
@@ -519,21 +582,6 @@ public abstract class PaxosAgent implements AgentService {
         public void run() {
             log.info("Initializing Paxos task");
             while (!stop || !eventQueue.isEmpty()) {
-                synchronized (electionLock) {
-                    while (!stop && leader == null) {
-                        log.info("Pausing Paxos task until leader election is complete");
-                        try {
-                            electionLock.wait();
-                        } catch (InterruptedException ignored) {
-                        }
-                        log.info("Resuming Paxos task");
-                    }
-
-                    if (stop) {
-                        break;
-                    }
-                }
-
                 PaxosEvent event;
                 synchronized (eventQueue) {
                     event = eventQueue.poll();
@@ -565,15 +613,30 @@ public abstract class PaxosAgent implements AgentService {
             synchronized (eventQueue) {
                 eventQueue.notifyAll();
             }
-            synchronized (electionLock) {
-                electionLock.notifyAll();
-            }
         }
     }
 
-    private void handleException(String msg, Exception e) {
-        log.error(msg, e);
-        throw new WrenchException(msg, e);
+    @Override
+    public void onElection() {
+
     }
 
+    @Override
+    public void onVictory(Member member) {
+
+    }
+
+    @Override
+    public boolean onLeaderQuery() {
+        return leader != null && leader.isLocal();
+    }
+
+    public Map<Long,Command> getPastOutcomes(long requestNumber) {
+        RequestHistory history = ledger.getRequestHistory(requestNumber);
+        return history.getPrevOutcomes();
+    }
+
+    public BallotNumber getNextBallotNumber() {
+        return ledger.getNextBallotNumber();
+    }
 }

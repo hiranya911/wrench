@@ -4,6 +4,7 @@ import edu.ucsb.cs.wrench.WrenchException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.HashMap;
@@ -149,13 +150,14 @@ public class WrenchConfiguration {
         if (config == null) {
             synchronized (WrenchConfiguration.class) {
                 if (config == null) {
-                    String configPath = System.getProperty("wrench.config.file", "wrench.properties");
+                    String configPath = System.getProperty("wrench.config.dir", "conf");
                     Properties props = new Properties();
+                    File configFile = new File(configPath, "wrench.properties");
                     try {
-                        props.load(new FileInputStream(configPath));
+                        props.load(new FileInputStream(configFile));
                         config = new WrenchConfiguration(props);
                     } catch (IOException e) {
-                        String msg = "Error loading Wrench configuration from: " + configPath;
+                        String msg = "Error loading Wrench configuration from: " + configFile.getPath();
                         log.error(msg, e);
                         throw new WrenchException(msg, e);
                     }

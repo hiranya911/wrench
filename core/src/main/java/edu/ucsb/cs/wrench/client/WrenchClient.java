@@ -11,8 +11,11 @@ import java.util.UUID;
 
 public class WrenchClient {
 
+    private static final int THREADS = 1;
+    private static final int REQUESTS = 1;
+
     public static void main(String[] args) throws Exception {
-        ClientThread[] threads = new ClientThread[1];
+        ClientThread[] threads = new ClientThread[THREADS];
         for (int i = 0; i < threads.length; i++) {
             threads[i] = new ClientThread();
         }
@@ -29,7 +32,7 @@ public class WrenchClient {
                 transport.open();
                 TProtocol protocol = new TBinaryProtocol(transport);
                 WrenchManagementService.Client client = new WrenchManagementService.Client(protocol);
-                for (int i = 0; i < 100; i++) {
+                for (int i = 0; i < REQUESTS; i++) {
                     System.out.println(client.append(UUID.randomUUID().toString(), getName()));
                     Thread.sleep(100);
                 }
