@@ -26,4 +26,4 @@ done
 
 WRENCH_CLASSPATH=$WRENCH_CLASSPATH:$WRENCH_HOME/lib
 
-java -Duser.dir=$WRENCH_HOME -Dwrench.cluster.name=Grades -Dwrench.config.dir=$WRENCH_HOME/conf -Dwrench.zk.dir=$WRENCH_HOME/db/zk -classpath $WRENCH_CLASSPATH edu.ucsb.cs.wrench.GradesDataServer $*
+java -Duser.dir=$WRENCH_HOME -Dwrench.cluster.name=Grades -Dwrench.config.dir=$WRENCH_HOME/conf -Dwrench.zk.dir=$WRENCH_HOME/db/zk -classpath $WRENCH_CLASSPATH edu.ucsb.cs.wrench.client.WrenchClient $*

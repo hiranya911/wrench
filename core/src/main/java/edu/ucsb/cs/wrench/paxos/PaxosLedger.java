@@ -186,7 +186,7 @@ public class PaxosLedger {
     }
 
 
-    private ListIterator<String> listIterator() {
+    private synchronized ListIterator<String> listIterator() {
         try {
             List<String> lines = FileUtils.readLines(ledgerFile);
             return lines.listIterator(lines.size());
@@ -196,7 +196,7 @@ public class PaxosLedger {
         }
     }
 
-    private void append(String msg) {
+    private synchronized void append(String msg) {
         try {
             FileUtils.writeStringToFile(ledgerFile, msg + "\n", true);
         } catch (IOException e) {

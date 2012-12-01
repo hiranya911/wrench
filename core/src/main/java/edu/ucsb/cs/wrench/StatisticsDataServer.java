@@ -35,10 +35,12 @@ public class StatisticsDataServer extends ZKPaxosAgent {
 
         if (command instanceof TxPrepareCommand) {
             final TxPrepareCommand prepare = (TxPrepareCommand) command;
-            if (!pendingTransactions.contains(prepare.getTransactionId())) {
-                synchronized (pendingTransactions) {
+            synchronized (pendingTransactions) {
+                if (!pendingTransactions.contains(prepare.getTransactionId())) {
                     try {
-                        log.info("Waiting for pending tx to arrive");
+                        if (log.isDebugEnabled()) {
+                            log.debug("Waiting for pending tx to arrive");
+                        }
                         pendingTransactions.wait(10000);
                     } catch (InterruptedException ignored) {
                     }
@@ -52,6 +54,9 @@ public class StatisticsDataServer extends ZKPaxosAgent {
                         executeClientRequest(new TxCommitCommand(prepare.getTransactionId()));
                     }
                 });
+                synchronized (prepare.getTransactionId().intern()) {
+                    prepare.getTransactionId().intern().notifyAll();
+                }
             } else {
                 throw new WrenchException("Never heard of this transaction from the other cluster");
             }
@@ -63,11 +68,12 @@ public class StatisticsDataServer extends ZKPaxosAgent {
                         boolean done = communicator.notifyCommit(commit.getTransactionId(),
                                 commit.getLineNumber(), peer);
                         if (done) {
+                            if (log.isDebugEnabled()) {
+                                log.info("Notified peer: " + peer.getProcessId() + " about COMMIT " +
+                                        commit.getTransactionId());
+                            }
                             return;
                         }
-                        log.info("Notified peer: " + peer.getProcessId() + " about COMMIT " +
-                                commit.getTransactionId());
-                        break;
                     } catch (WrenchException e) {
                         log.error("Error while contacting remote peer", e);
                     }

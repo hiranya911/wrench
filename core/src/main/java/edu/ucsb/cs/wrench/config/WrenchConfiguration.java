@@ -8,9 +8,7 @@ import org.apache.commons.logging.LogFactory;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 
 public class WrenchConfiguration {
 
@@ -28,56 +26,51 @@ public class WrenchConfiguration {
 
     private String wrenchHome;
 
+    private String clusterName;
+
     private WrenchConfiguration(Properties properties) {
         this.properties = properties;
         this.wrenchHome = System.getProperty("wrench.home", System.getProperty("user.dir"));
-        Map<String,Member> membership = new HashMap<String, Member>();
-        Map<String,Member> peerMembership = new HashMap<String, Member>();
-        boolean localSeen = false;
-        for (String key : properties.stringPropertyNames()) {
-            if (key.startsWith("wrench.member.")) {
-                String[] segments = key.split("\\.");
-                String processId = segments[2];
-                Member member;
-                if (membership.containsKey(processId)) {
-                    member = membership.get(processId);
+        this.clusterName = System.getProperty("wrench.cluster.name");
+        if (this.clusterName == null) {
+            throw new WrenchException("wrench.cluster.name not specified");
+        }
+
+        File zkDir = new File(System.getProperty("wrench.zk.dir"));
+        File myIdFile = new File(zkDir, "myid");
+        String myId = null;
+        try {
+            myId = FileUtils.readFileToString(myIdFile).trim();
+        } catch (IOException e) {
+            throw new WrenchException("Unable to read the ZK myid file", e);
+        }
+
+        List<Member> allMembers = new ArrayList<Member>();
+        List<Member> allPeers = new ArrayList<Member>();
+        for (String property : properties.stringPropertyNames()) {
+            if (property.startsWith("wrench.server.")) {
+                String prefix = property.substring("wrench.server.".length(), property.lastIndexOf('.'));
+                if (prefix.equals(this.clusterName)) {
+                    String value = properties.getProperty(property);
+                    String processId = property.substring(property.lastIndexOf('.') + 1);
+                    String[] connection = value.split(":");
+                    boolean local = processId.equals(myId);
+                    Member member = new Member(prefix + processId, connection[0],
+                            Integer.parseInt(connection[1]), local);
+                    allMembers.add(member);
                 } else {
-                    member = new Member(processId);
-                    membership.put(processId, member);
-                }
-                if ("host".equals(segments[3])) {
-                    member.setHostname(properties.getProperty(key));
-                } else if ("port".equals(segments[3])) {
-                    member.setPort(Integer.parseInt(properties.getProperty(key)));
-                } else if ("local".equals(segments[3])) {
-                    boolean local = Boolean.parseBoolean(properties.getProperty(key));
-                    if (local && localSeen) {
-                        throw new WrenchException("Only one member be designated local");
-                    }
-                    member.setLocal(local);
-                    if (local) {
-                        localSeen = true;
-                    }
-                }
-            } else if (key.startsWith("wrench.peer.")) {
-                String[] segments = key.split("\\.");
-                String processId = segments[2];
-                Member member;
-                if (peerMembership.containsKey(processId)) {
-                    member = peerMembership.get(processId);
-                } else {
-                    member = new Member(processId);
-                    peerMembership.put(processId, member);
-                }
-                if ("host".equals(segments[3])) {
-                    member.setHostname(properties.getProperty(key));
-                } else if ("port".equals(segments[3])) {
-                    member.setPort(Integer.parseInt(properties.getProperty(key)));
+                    String value = properties.getProperty(property);
+                    String processId = property.substring(property.lastIndexOf('.') + 1);
+                    String[] connection = value.split(":");
+                    Member member = new Member(prefix + processId, connection[0],
+                            Integer.parseInt(connection[1]), false);
+                    allPeers.add(member);
                 }
             }
         }
-        this.members = membership.values().toArray(new Member[membership.size()]);
-        this.peers = peerMembership.values().toArray(new Member[peerMembership.size()]);
+
+        this.members = allMembers.toArray(new Member[allMembers.size()]);
+        this.peers = allPeers.toArray(new Member[allPeers.size()]);
     }
 
     public String getWrenchHome() {

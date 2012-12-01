@@ -39,11 +39,13 @@ public class GradesDataServer extends ZKPaxosAgent {
                         for (Member peer : config.getPeers()) {
                             try {
                                 communicator.notifyPrepare(prepare.getTransactionId(), peer);
-                                log.info("Notified peer: " + peer.getProcessId() + " about PREPARE " +
-                                        prepare.getTransactionId());
+                                if (log.isDebugEnabled()) {
+                                    log.debug("Notified peer: " + peer.getProcessId() + " about PREPARE " +
+                                            prepare.getTransactionId());
+                                }
                                 return;
                             } catch (WrenchException e) {
-                                log.error("Error while contacting remote peer", e);
+                                log.debug("Error while contacting remote peer", e);
                             }
                         }
                     }

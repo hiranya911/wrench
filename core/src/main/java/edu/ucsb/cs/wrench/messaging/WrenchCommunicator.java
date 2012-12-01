@@ -287,7 +287,6 @@ public class WrenchCommunicator {
 
     private void handleException(Member target, TException e) {
         String msg = "Error contacting the remote member: " + target.getProcessId();
-        log.warn(msg);
         log.debug(msg, e);
     }
 }

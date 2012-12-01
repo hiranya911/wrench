@@ -30,7 +30,9 @@ public class TxCommitCommand extends Command {
             List<String> lines = FileUtils.readLines(dataFile);
             if (lineNumber == lines.size() + 1) {
                 FileUtils.writeStringToFile(dataFile, data + "\n", true);
-                log.info("Transaction " + transactionId + " COMMITTED");
+                if (log.isDebugEnabled()) {
+                    log.debug("Transaction " + transactionId + " COMMITTED");
+                }
                 synchronized (this) {
                     this.notifyAll();
                 }

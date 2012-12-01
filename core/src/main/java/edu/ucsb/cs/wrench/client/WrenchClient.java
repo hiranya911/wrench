@@ -1,59 +1,207 @@
 package edu.ucsb.cs.wrench.client;
 
-import edu.ucsb.cs.wrench.WrenchException;
+import edu.ucsb.cs.wrench.config.Member;
+import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.messaging.DatabaseSnapshot;
 import edu.ucsb.cs.wrench.messaging.WrenchManagementService;
-import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
 
-import java.util.List;
-import java.util.Random;
-import java.util.UUID;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.*;
 
 public class WrenchClient {
 
-    private static final int THREADS = 2;
-    private static final int REQUESTS = 100;
+    private static ArrayList<Member> gradeServers = new ArrayList<Member>();
+    private static ArrayList<Member> statServers = new ArrayList<Member>();
 
-    public static void main(String[] args) throws Exception {
-        /*ClientThread[] threads = new ClientThread[THREADS];
-        for (int i = 0; i < threads.length; i++) {
-            threads[i] = new ClientThread();
-        }
-        for (int i = 0; i < threads.length; i++) {
-            threads[i].start();
-        }*/
-        read();
-    }
+    private static boolean verbose = false;
 
-    private static void read() {
-        TTransport transport = new TSocket("localhost", 9091);
-        try {
-            transport.open();
-            TProtocol protocol = new TBinaryProtocol(transport);
-            WrenchManagementService.Client client = new WrenchManagementService.Client(protocol);
-            DatabaseSnapshot snapshot = client.read();
-            List<String> grades = snapshot.getGrades();
-            List<String> stats = snapshot.getStats();
-            if (grades.size() == stats.size()) {
-                for (int i = 0; i < grades.size(); i++) {
-                    System.out.println(grades.get(i) + "\t" + stats.get(i));
-                    validate(grades.get(i), stats.get(i));
+    public static void main(String[] args) throws IOException {
+        System.out.println("Welcome to Wrench Client");
+        System.out.println("Enter 'help' to see a list of supported commands...\n");
+
+        Collections.addAll(gradeServers, WrenchConfiguration.getConfiguration().getMembers());
+        Collections.addAll(statServers, WrenchConfiguration.getConfiguration().getPeers());
+
+        printEndpoints();
+        System.out.println();
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        while (true) {
+            System.out.print("> ");
+            try {
+                String command = reader.readLine();
+                command = command.trim();
+                if ("quit".equals(command)) {
+                    break;
+                } else if ("read".equals(command)) {
+                    read(false);
+                } else if ("reads".equals(command)) {
+                    read(true);
+                } else if (command.startsWith("appendr")) {
+                    if (command.equals("appendr")) {
+                        appendRandom(1, 1);
+                    } else {
+                        String[] commandArgs = command.split(" ");
+                        appendRandom(Integer.parseInt(commandArgs[1]), Integer.parseInt(commandArgs[2]));
+                    }
+                } else if (command.startsWith("append ")) {
+                    String[] commandArgs = command.split(" ");
+                    if (commandArgs.length != 11) {
+                        System.out.println("append must be followed by 10 integers");
+                    } else {
+                        int[] data = new int[10];
+                        for (int i = 0; i < data.length; i++) {
+                            data[i] = Integer.parseInt(commandArgs[i + 1]);
+                        }
+                        if (append(data)) {
+                            System.out.println("Append successful");
+                        }
+                    }
+                } else if (command.startsWith("sgp")) {
+                    String[] commandArgs = command.split(" ");
+                    if (commandArgs.length == 2) {
+                        setPrimary(gradeServers, commandArgs[1]);
+                    } else {
+                        printEndpoints();
+                    }
+                } else if (command.startsWith("ssp")) {
+                    String[] commandArgs = command.split(" ");
+                    if (commandArgs.length == 2) {
+                        setPrimary(statServers, commandArgs[1]);
+                    } else {
+                        printEndpoints();
+                    }
+                } else if ("verbose".equals(command)) {
+                    verbose = true;
+                    System.out.println("Verbose mode enabled");
+                } else if ("silent".equals(command)) {
+                    verbose = false;
+                    System.out.println("Silent mode enabled");
+                } else if ("help".equals(command)) {
+                    System.out.println("append [int x 10] - Append the given 10 integers to the database");
+                    System.out.println("appendr [concurrency requests] - Append random entries to the database");
+                    System.out.println("help - Displays this help message");
+                    System.out.println("quit - Quits the Wrench client");
+                    System.out.println("read - Read and output the current contents of the database");
+                    System.out.println("reads - Read the current contents of the database and report on the consistency level");
+                    System.out.println("sgp [processId] - Set the primary grades server");
+                    System.out.println("silent - Turns off the verbose mode");
+                    System.out.println("ssp [processId] - Set the primary stats server");
+                    System.out.println("verbose - Activates the verbose mode");
+                } else if ("".equals(command)) {
+                } else {
+                    System.out.println("Unrecognized command: " + command);
                 }
-            } else {
-                System.err.println("Size Mismatch!");
+            } catch (NumberFormatException e) {
+                System.out.println("Number format error: Possible syntax error in command");
             }
-        } catch (Exception e) {
-            e.printStackTrace();
-        } finally {
-            transport.close();
         }
     }
 
-    private static void validate(String grades, String stats) {
+    private static void setPrimary(List<Member> list, String primary) {
+        int index = -1;
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).getProcessId().equals(primary)) {
+                index = i;
+                break;
+            }
+        }
+
+        if (index == -1) {
+            System.out.println("No endpoint found with process ID: " + primary);
+        } else if (index == 0) {
+            System.out.println(primary + " is already the primary");
+        } else {
+            Member member = list.remove(index);
+            list.add(0, member);
+            printEndpoints();
+        }
+    }
+
+    private static void printEndpoints() {
+        System.out.println("Current endpoint priorities");
+        boolean first = true;
+        for (Member member : gradeServers) {
+            if (!first) {
+                System.out.print(", ");
+            }
+            System.out.print(member.getProcessId());
+            first = false;
+        }
+
+        System.out.println();
+
+        first = true;
+        for (Member member : statServers) {
+            if (!first) {
+                System.out.print(", ");
+            }
+            System.out.print(member.getProcessId());
+            first = false;
+        }
+        System.out.println();
+    }
+
+    private static void read(boolean silent) {
+        for (Member member : gradeServers) {
+            TTransport transport = new TSocket(member.getHostname(), member.getPort());
+            try {
+                transport.open();
+                TProtocol protocol = new TBinaryProtocol(transport);
+                WrenchManagementService.Client client = new WrenchManagementService.Client(protocol);
+                DatabaseSnapshot snapshot = client.read();
+                List<String> grades = snapshot.getGrades();
+                List<String> stats = snapshot.getStats();
+                if (grades.size() == stats.size()) {
+                    boolean valid = true;
+                    List<String> errors = new ArrayList<String>();
+                    for (int i = 0; i < grades.size(); i++) {
+                        String msg = grades.get(i) + "\t\t" + stats.get(i);
+                        if (!silent) {
+                            System.out.println(msg);
+                        }
+                        boolean result = validate(grades.get(i), stats.get(i));
+                        if (!result) {
+                            errors.add(msg);
+                        }
+                        valid = valid && result;
+                    }
+                    if (valid) {
+                        if (grades.size() > 0) {
+                            if (!silent) {
+                                System.out.println();
+                            }
+                            System.out.println("Returned " + grades.size() + " lines");
+                            System.out.println("All entries consistent...");
+                        } else {
+                            System.out.println("No data available");
+                        }
+                    } else {
+                        log("\nSome inconsistencies detected...", true);
+                        for (String error : errors) {
+                            log(error, true);
+                        }
+                    }
+                } else {
+                    log("Size Mismatch!", true);
+                }
+                System.out.flush();
+                return;
+            } catch (Exception e) {
+                log("Error contacting member: " + member.getProcessId(), false);
+            } finally {
+                transport.close();
+            }
+        }
+        log("No live members were found", true);
+    }
+
+    private static boolean validate(String grades, String stats) {
         String[] gradeValues = grades.split(" ");
         int[] gradeData = new int[gradeValues.length];
         for (int i = 0; i < gradeData.length; i++) {
@@ -79,45 +227,55 @@ public class WrenchClient {
             sum += grade;
         }
 
-        if (min != (int) statData[0] || max != (int) statData[1] ||
-                (sum/gradeData.length) != statData[2]) {
-            throw new WrenchException("Data mismatch: " + grades + "\t" + stats);
+        return min == (int) statData[0] && max == (int) statData[1] &&
+                (sum/gradeData.length) == statData[2];
+    }
+
+    private static void appendRandom(int concurrency, int requests) {
+        ClientThread[] t = new ClientThread[concurrency];
+        for (int i = 0; i < concurrency; i++) {
+            t[i] = new ClientThread(requests);
+            t[i].start();
+        }
+
+        int totalSuccess = 0;
+        for (int i = 0; i < concurrency; i++) {
+            try {
+                t[i].join();
+                totalSuccess += t[i].success;
+            } catch (InterruptedException ignored) {
+            }
+        }
+
+        System.out.println(totalSuccess + " of " + (concurrency*requests) + " appends were successful");
+    }
+
+    private static boolean append(int[] data) {
+        String transactionId = UUID.randomUUID().toString();
+        if (sendToGrades(transactionId, data)) {
+            boolean committed = sendToStats(transactionId, data);
+            if (committed) {
+                log("Transaction " + transactionId + " completed", false);
+                return true;
+            } else {
+                log("Transaction " + transactionId + " failed at stats", true);
+                return false;
+            }
+        } else {
+            log("Transaction " + transactionId + " failed at grades", true);
+            return false;
         }
     }
 
-    private static class ClientThread extends Thread {
-
-        @Override
-        public void run() {
-            Random rand = new Random();
-            int[] data = new int[10];
-            for (int i = 0; i < data.length; i++) {
-                data[i] = rand.nextInt(101);
-            }
-
-            for (int i = 0; i < REQUESTS; i++) {
-                String transactionId = UUID.randomUUID().toString();
-                if (sendToGrades(transactionId, data)) {
-                    boolean committed = sendToStats(transactionId, data);
-                    if (committed) {
-                        System.out.println(transactionId + " COMPLETED");
-                    } else {
-                        System.out.println("OOPS");
-                    }
-                } else {
-                    System.err.println("Grades cluster didn't accept");
-                }
-
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException e) {
-
-                }
-            }
+    private static void log(String msg, boolean error) {
+        if (verbose || error) {
+            System.out.println(msg);
         }
+    }
 
-        private boolean sendToGrades(String transactionId, int[] data) {
-            TTransport transport = new TSocket("localhost", 9091);
+    private static boolean sendToGrades(String transactionId, int[] data) {
+        for (Member member : gradeServers) {
+            TTransport transport = new TSocket(member.getHostname(), member.getPort());
             try {
                 transport.open();
                 TProtocol protocol = new TBinaryProtocol(transport);
@@ -126,16 +284,21 @@ public class WrenchClient {
                 for (int d : data) {
                     dataString += d + " ";
                 }
-                return client.append(transactionId, dataString.trim());
+                if (client.append(transactionId, dataString.trim())) {
+                    return true;
+                }
             } catch (Exception e) {
-                return false;
+                System.out.println("Error contacting member: " + member.getProcessId());
             } finally {
                 transport.close();
             }
         }
+        return false;
+    }
 
-        private boolean sendToStats(String transactionId, int[] data) {
-            TTransport transport = new TSocket("localhost", 8081);
+    private static boolean sendToStats(String transactionId, int[] data) {
+        for (Member member : statServers) {
+            TTransport transport = new TSocket(member.getHostname(), member.getPort());
             try {
                 transport.open();
                 TProtocol protocol = new TBinaryProtocol(transport);
@@ -153,11 +316,45 @@ public class WrenchClient {
                 }
                 String dataString = min + " " + max + " " + sum/data.length;
                 WrenchManagementService.Client client = new WrenchManagementService.Client(protocol);
-                return client.append(transactionId, dataString);
+                if (client.append(transactionId, dataString)) {
+                    return true;
+                }
             } catch (Exception e) {
-                return false;
+                System.out.println("Error contacting member: " + member.getProcessId());
             } finally {
                 transport.close();
+            }
+        }
+        return false;
+    }
+
+    private static class ClientThread extends Thread {
+
+        private int requests;
+        private int success = 0;
+
+        private ClientThread(int requests) {
+            this.requests = requests;
+        }
+
+        @Override
+        public void run() {
+            Random rand = new Random();
+
+            for (int i = 0; i < requests; i++) {
+                int[] data = new int[10];
+                for (int j = 0; j < data.length; j++) {
+                    data[j] = rand.nextInt(101);
+                }
+                if (append(data)) {
+                    success++;
+                }
+
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ignored) {
+
+                }
             }
         }
     }
