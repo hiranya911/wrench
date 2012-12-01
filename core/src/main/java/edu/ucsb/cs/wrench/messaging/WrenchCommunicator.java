@@ -19,6 +19,7 @@ import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class WrenchCommunicator {
@@ -243,6 +244,19 @@ public class WrenchCommunicator {
         try {
             WrenchManagementService.Client client = getClient(transport);
             return client.notifyCommit(transactionId, lineNumber);
+        } catch (TException e) {
+            handleException(member, e);
+            throw new WrenchException("Error contacting the remote member", e);
+        } finally {
+            close(transport);
+        }
+    }
+
+    public List<String> getLines(int lineCount, Member member) {
+        TTransport transport = new TSocket(member.getHostname(), member.getPort());
+        try {
+            WrenchManagementService.Client client = getClient(transport);
+            return client.getLines(lineCount);
         } catch (TException e) {
             handleException(member, e);
             throw new WrenchException("Error contacting the remote member", e);

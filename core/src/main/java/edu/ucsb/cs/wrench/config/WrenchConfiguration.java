@@ -119,10 +119,8 @@ public class WrenchConfiguration {
 
     public void setDataFileName(String fileName) {
         properties.setProperty("wrench.data.file", fileName);
-        File dbDir = new File(getWrenchHome(), getDBDirectoryPath());
-        File dataFile = new File(dbDir, fileName);
         try {
-            FileUtils.touch(dataFile);
+            FileUtils.touch(getDataFile());
         } catch (IOException e) {
             throw new WrenchException("Cannot initialize the data file", e);
         }
@@ -152,6 +150,12 @@ public class WrenchConfiguration {
 
     public boolean isMajority(int count) {
         return count > members.length/2.0;
+    }
+
+    public File getDataFile() {
+        File dbDir = new File(getWrenchHome(), getDBDirectoryPath());
+        File dataFile = new File(dbDir, getDataFileName());
+        return dataFile;
     }
 
     public static WrenchConfiguration getConfiguration() {

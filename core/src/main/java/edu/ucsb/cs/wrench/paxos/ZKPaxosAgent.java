@@ -40,7 +40,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
 
     private ExecutorService zkService = Executors.newSingleThreadExecutor();
     private ZooKeeper zkClient;
-    private WrenchConfiguration config = WrenchConfiguration.getConfiguration();
+    protected WrenchConfiguration config = WrenchConfiguration.getConfiguration();
     protected Member leader;
     private PaxosLedger ledger;
     private TServer server;
@@ -116,6 +116,8 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
             }
         }
 
+
+
         // Start the Paxos event processor
         paxosTask = exec.submit(paxosWorker);
 
@@ -158,7 +160,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
     public boolean executeClientRequest(final Command command) {
         while (true) {
             synchronized (stateMachineLock) {
-                while (agentMode != PaxosAgentMode.COHORT && agentMode != PaxosAgentMode.LEADER) {
+                while (agentMode != PaxosAgentMode.COHORT && agentMode != PaxosAgentMode.LEADER && !acceptRequests) {
                     try {
                         stateMachineLock.wait(5000);
                     } catch (InterruptedException ignored) {
@@ -166,20 +168,26 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                 }
             }
 
-            if (!acceptRequests) {
-                log.info("Not accepting requests at the moment");
-                return false;
-            }
-
             final long requestNumber;
             synchronized (nextRequest) {
-                requestNumber = nextRequest.getAndIncrement();
                 if (command instanceof TxCommitCommand) {
                     TxCommitCommand commit = (TxCommitCommand) command;
                     if (commit.getLineNumber() == -1) {
+                        // Only executed by the Stats Leader
                         commit.setLineNumber(nextLineNumber.getAndIncrement());
+                    } else {
+                        // Only executed by the Grades Leader
+                        while (commit.getLineNumber() != nextLineNumber.get()) {
+                            try {
+                                nextRequest.wait(5000);
+                            } catch (InterruptedException ignored) {
+                            }
+                        }
+                        nextLineNumber.incrementAndGet();
                     }
                 }
+                requestNumber = nextRequest.getAndIncrement();
+                nextRequest.notifyAll();
             }
             final AtomicBoolean done = new AtomicBoolean(false);
             if (leader.isLocal()) {
@@ -206,6 +214,10 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                     return communicator.relayCommand(command, leader);
                 } catch (WrenchException e) {
                     log.error("Failed to relay the command to leader - Retrying", e);
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException ignored) {
+                    }
                 }
             }
         }
@@ -315,6 +327,35 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
             } else {
                 break;
             }
+        }
+    }
+
+    @Override
+    public String[] getLines(int lineCount) {
+        if (lineCount <= 0) {
+            return new String[]{};
+        }
+        try {
+            List<String> lines = FileUtils.readLines(config.getDataFile());
+            int actualLineCount = Math.min(lineCount, lines.size());
+            String[] output = new String[actualLineCount];
+            for (int i = 0; i < output.length; i++) {
+                output[i] = lines.get(i);
+            }
+            return output;
+        } catch (IOException e) {
+            log.error("Error while reading from the data file", e);
+            return new String[]{};
+        }
+    }
+
+    public String[] getLines() {
+        try {
+            List<String> lines = FileUtils.readLines(config.getDataFile());
+            return lines.toArray(new String[lines.size()]);
+        } catch (IOException e) {
+            log.error("Error while reading from the data file", e);
+            return new String[]{};
         }
     }
 
@@ -458,9 +499,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
         }
 
         try {
-            File dbDir = new File(config.getWrenchHome(), config.getDBDirectoryPath());
-            File dataFile = new File(dbDir, config.getDataFileName());
-            List<String> lines = FileUtils.readLines(dataFile);
+            List<String> lines = FileUtils.readLines(config.getDataFile());
             nextLineNumber.set(lines.size() + 1);
         } catch (FileNotFoundException e) {
             nextLineNumber.set(1);
@@ -528,8 +567,27 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                 pendingTransactions.add(transactionId);
                 pendingTransactions.notifyAll();
             }
+
+            while (pendingTransactions.contains(transactionId)) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ignored) {
+                }
+            }
         } else {
-            communicator.notifyPrepare(transactionId, leader);
+            while (true) {
+                try {
+                    communicator.notifyPrepare(transactionId, leader);
+                    break;
+                } catch (Exception e) {
+                    log.error("Error while relaying the append notification to leader - Retrying", e);
+                    try {
+                        Thread.sleep(2000);
+                    } catch (InterruptedException ignored) {
+                    }
+                }
+
+            }
         }
     }
 
@@ -537,7 +595,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
         if (leader.isLocal()) {
             TxCommitCommand commit = new TxCommitCommand(transactionId);
             commit.setLineNumber(lineNumber);
-            return executeClientRequest(new TxCommitCommand(transactionId));
+            return executeClientRequest(commit);
         } else {
             return communicator.notifyCommit(transactionId, lineNumber, leader);
         }
@@ -560,6 +618,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                 break;
             case Disconnected:
                 log.warn("Lost the connection to ZooKeeper server");
+                setAgentMode(PaxosAgentMode.VIEW_CHANGE);
                 acceptRequests = false;
                 break;
             case Expired:
@@ -636,7 +695,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                     event = eventQueue.poll();
                     if (event == null) {
                         try {
-                            eventQueue.wait();
+                            eventQueue.wait(5000);
                         } catch (InterruptedException ignored) {
                         }
                         continue;

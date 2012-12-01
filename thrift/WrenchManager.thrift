@@ -5,6 +5,11 @@ struct BallotNumber {
   2:string processId
 }
 
+struct DatabaseSnapshot {
+  1:list<string> grades,
+  2:list<string> stats
+}
+
 service WrenchManagementService {
 
   bool ping(),
@@ -33,6 +38,11 @@ service WrenchManagementService {
 
   BallotNumber getNextBallot(),
 
-  bool notifyCommit(1:string transactionId, 2:i64 lineNumber)
+  bool notifyCommit(1:string transactionId, 2:i64 lineNumber),
+
+  DatabaseSnapshot read(),
+
+  list<string> getLines(1:i32 lineCount)
+
 }
 

@@ -5,7 +5,10 @@ import edu.ucsb.cs.wrench.commands.TxCommitCommand;
 import edu.ucsb.cs.wrench.commands.TxPrepareCommand;
 import edu.ucsb.cs.wrench.config.Member;
 import edu.ucsb.cs.wrench.config.WrenchConfiguration;
+import edu.ucsb.cs.wrench.paxos.DatabaseSnapshot;
 import edu.ucsb.cs.wrench.paxos.ZKPaxosAgent;
+
+import java.util.List;
 
 public class StatisticsDataServer extends ZKPaxosAgent {
 
@@ -35,6 +38,7 @@ public class StatisticsDataServer extends ZKPaxosAgent {
             if (!pendingTransactions.contains(prepare.getTransactionId())) {
                 synchronized (pendingTransactions) {
                     try {
+                        log.info("Waiting for pending tx to arrive");
                         pendingTransactions.wait(10000);
                     } catch (InterruptedException ignored) {
                     }
@@ -70,5 +74,32 @@ public class StatisticsDataServer extends ZKPaxosAgent {
                 }
             }
         }
+    }
+
+    @Override
+    public DatabaseSnapshot readSnapshot() {
+        String[] stats = getLines();
+        if (stats.length == 0) {
+            return new DatabaseSnapshot();
+        } else {
+            List<String> grades = null;
+            for (Member peer : config.getPeers()) {
+                try {
+                    grades = communicator.getLines(stats.length, peer);
+                } catch (WrenchException e) {
+                    log.error("Error while obtaining data from peer", e);
+                }
+            }
+
+            if (grades != null && grades.size() > 0) {
+                int actualLineCount = Math.min(stats.length, grades.size());
+                DatabaseSnapshot snapshot = new DatabaseSnapshot();
+                for (int i = 0; i < actualLineCount; i++) {
+                    snapshot.addData(grades.get(i), stats[i]);
+                }
+                return snapshot;
+            }
+        }
+        return new DatabaseSnapshot();
     }
 }

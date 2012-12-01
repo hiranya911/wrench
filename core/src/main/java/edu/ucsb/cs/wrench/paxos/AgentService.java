@@ -25,4 +25,8 @@ public interface AgentService {
 
     public boolean onAppendCommit(String transactionId, long lineNumber);
 
+    public DatabaseSnapshot readSnapshot();
+
+    public String[] getLines(int lineCount);
+
 }

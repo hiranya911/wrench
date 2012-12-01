@@ -7,8 +7,7 @@ import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.paxos.*;
 import org.apache.thrift.TException;
 
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.*;
 
 public class WrenchManagementServiceHandler implements WrenchManagementService.Iface {
 
@@ -117,6 +116,25 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
             return new BallotNumber(-1, WrenchCommunicator.NULL_STRING);
         }
         return new BallotNumber(ballotNumber.getNumber(), ballotNumber.getProcessId());
+    }
+
+    @Override
+    public DatabaseSnapshot read() throws TException {
+        edu.ucsb.cs.wrench.paxos.DatabaseSnapshot snapshot = agent.readSnapshot();
+        DatabaseSnapshot output = new DatabaseSnapshot();
+        output.setGrades(snapshot.getGrades());
+        output.setStats(snapshot.getStats());
+        return output;
+    }
+
+    @Override
+    public List<String> getLines(int lineCount) throws TException {
+        String[] lines = agent.getLines(lineCount);
+        List<String> output = new ArrayList<String>();
+        for (String line : lines) {
+            output.add(line);
+        }
+        return output;
     }
 
     private edu.ucsb.cs.wrench.paxos.BallotNumber toPaxosBallotNumber(BallotNumber ballotNumber) {
