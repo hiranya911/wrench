@@ -29,37 +29,39 @@ public class StatisticsDataServer extends ZKPaxosAgent {
 
     @Override
     public void onDecision(long requestNumber, Command command) {
-        if (!leader.isLocal()) {
-            return;
-        }
-
         if (command instanceof TxPrepareCommand) {
+            if (!leader.isLocal()) {
+                return;
+            }
             final TxPrepareCommand prepare = (TxPrepareCommand) command;
-            synchronized (pendingTransactions) {
-                if (!pendingTransactions.contains(prepare.getTransactionId())) {
-                    try {
-                        if (log.isDebugEnabled()) {
-                            log.debug("Waiting for pending tx to arrive");
+            exec.submit(new Runnable() {
+                @Override
+                public void run() {
+                    synchronized (prepare.getTransactionId().intern()) {
+                        if (!pendingTransactions.contains(prepare.getTransactionId())) {
+                            try {
+                                if (log.isDebugEnabled()) {
+                                    log.debug("Waiting for pending tx to arrive: " + prepare.getTransactionId());
+                                }
+                                prepare.getTransactionId().intern().wait(10000);
+                            } catch (InterruptedException ignored) {
+                            }
                         }
-                        pendingTransactions.wait(10000);
-                    } catch (InterruptedException ignored) {
-                    }
-                }
-            }
 
-            if (pendingTransactions.remove(prepare.getTransactionId())) {
-                exec.submit(new Runnable() {
-                    @Override
-                    public void run() {
-                        executeClientRequest(new TxCommitCommand(prepare.getTransactionId()));
+                        if (pendingTransactions.remove(prepare.getTransactionId())) {
+                            if (log.isDebugEnabled()) {
+                                log.debug("Found the transaction: " + prepare.getTransactionId());
+                            }
+                            executeClientRequest(new TxCommitCommand(prepare.getTransactionId()));
+                        } else {
+                            String msg = "Never heard of transaction from the other cluster: " + prepare.getTransactionId();
+                            log.error(msg);
+                            throw new WrenchException(msg);
+                        }
+
                     }
-                });
-                synchronized (prepare.getTransactionId().intern()) {
-                    prepare.getTransactionId().intern().notifyAll();
                 }
-            } else {
-                throw new WrenchException("Never heard of this transaction from the other cluster");
-            }
+            });
         } else if (command instanceof TxCommitCommand) {
             TxCommitCommand commit = (TxCommitCommand) command;
             while (true) {

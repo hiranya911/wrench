@@ -22,6 +22,11 @@
             <fileMode>775</fileMode>
         </file>
         <file>
+            <source>src/main/assembly/client.sh</source>
+            <outputDirectory>wrench-${project.version}/bin</outputDirectory>
+            <fileMode>775</fileMode>
+        </file>
+        <file>
             <source>src/main/assembly/wrench.properties</source>
             <outputDirectory>wrench-${project.version}/conf</outputDirectory>
         </file>

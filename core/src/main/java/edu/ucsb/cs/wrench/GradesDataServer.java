@@ -7,6 +7,7 @@ import edu.ucsb.cs.wrench.paxos.DatabaseSnapshot;
 import edu.ucsb.cs.wrench.paxos.ZKPaxosAgent;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class GradesDataServer extends ZKPaxosAgent {
 
@@ -36,21 +37,43 @@ public class GradesDataServer extends ZKPaxosAgent {
                 @Override
                 public void run() {
                     for (int i = 0; i < 3; i++) {
-                        for (Member peer : config.getPeers()) {
-                            try {
-                                communicator.notifyPrepare(prepare.getTransactionId(), peer);
-                                if (log.isDebugEnabled()) {
-                                    log.debug("Notified peer: " + peer.getProcessId() + " about PREPARE " +
-                                            prepare.getTransactionId());
-                                }
-                                return;
-                            } catch (WrenchException e) {
-                                log.debug("Error while contacting remote peer", e);
+                        try {
+                            if (peerLeader == null) {
+                                initPeerLeader();
                             }
+                            communicator.notifyPrepare(prepare.getTransactionId(), peerLeader);
+                            if (log.isDebugEnabled()) {
+                                log.debug("Notified peer: " + peerLeader.getProcessId() +
+                                        " about PREPARE " + prepare.getTransactionId());
+                            }
+                            return;
+                        } catch (WrenchException e) {
+                            initPeerLeader();
                         }
                     }
                 }
             });
+        }
+    }
+
+    private volatile Member peerLeader = null;
+
+    private void initPeerLeader() {
+        if (log.isDebugEnabled()) {
+            log.debug("Starting peer leader discovery");
+        }
+        for (int i = 0; i < 3; i++) {
+            for (Member peer : config.getPeers()) {
+                if (communicator.sendLeaderQueryMessage(peer)) {
+                    peerLeader = peer;
+                    return;
+                }
+            }
+            try {
+                log.info("Unable to locate peer leader - Retrying in 2 seconds");
+                Thread.sleep(2000);
+            } catch (InterruptedException ignored) {
+            }
         }
     }
 

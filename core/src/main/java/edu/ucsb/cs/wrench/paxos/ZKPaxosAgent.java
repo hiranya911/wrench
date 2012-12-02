@@ -160,41 +160,77 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
     public boolean executeClientRequest(final Command command) {
         while (true) {
             synchronized (stateMachineLock) {
-                while (agentMode != PaxosAgentMode.COHORT && agentMode != PaxosAgentMode.LEADER && !acceptRequests) {
+                while ((agentMode != PaxosAgentMode.COHORT && agentMode != PaxosAgentMode.LEADER) || !acceptRequests) {
                     try {
+                        if (log.isDebugEnabled()) {
+                            log.debug("Waiting for state machine to stabilize");
+                        }
                         stateMachineLock.wait(5000);
                     } catch (InterruptedException ignored) {
                     }
                 }
             }
 
-            final long requestNumber;
-            synchronized (nextRequest) {
-                if (command instanceof TxCommitCommand) {
-                    TxCommitCommand commit = (TxCommitCommand) command;
-                    if (commit.getLineNumber() == -1) {
-                        // Only executed by the Stats Leader
-                        commit.setLineNumber(nextLineNumber.getAndIncrement());
-                    } else {
-                        // Only executed by the Grades Leader
-                        if (commit.getLineNumber() < nextLineNumber.get()) {
-                            return true;
-                        }
-                        while (commit.getLineNumber() != nextLineNumber.get()) {
-                            try {
-                                nextRequest.wait(5000);
-                            } catch (InterruptedException ignored) {
+            if (leader.isLocal()) {
+                synchronized (stateMachineLock) {
+                    while ((agentMode != PaxosAgentMode.COHORT &&
+                            agentMode != PaxosAgentMode.LEADER) || !acceptRequests) {
+                        try {
+                            if (log.isDebugEnabled()) {
+                                log.debug("Waiting for leader's state machine to stabilize");
                             }
+                            stateMachineLock.wait(5000);
+                        } catch (InterruptedException ignored) {
                         }
-                        nextLineNumber.incrementAndGet();
                     }
                 }
-                requestNumber = nextRequest.getAndIncrement();
-                nextRequest.notifyAll();
-            }
-            final AtomicBoolean done = new AtomicBoolean(false);
-            final AtomicBoolean success = new AtomicBoolean(false);
-            if (leader.isLocal()) {
+
+                if (log.isDebugEnabled()) {
+                    log.debug("About to schedule new command: " + command);
+                }
+
+                final long requestNumber;
+                synchronized (nextRequest) {
+                    if (command instanceof TxCommitCommand) {
+                        TxCommitCommand commit = (TxCommitCommand) command;
+                        if (commit.getLineNumber() == -1) {
+                            // Only executed by the Stats Leader
+                            commit.setLineNumber(nextLineNumber.getAndIncrement());
+                            if (log.isDebugEnabled()) {
+                                log.debug("Assigned line number to: " + command);
+                            }
+                        } else {
+                            // Only executed by the Grades Leader
+                            if (commit.getLineNumber() < nextLineNumber.get()) {
+                                return true;
+                            }
+
+                            if (log.isDebugEnabled()) {
+                                log.debug("Next line number is: " + nextLineNumber.get());
+                            }
+
+                            if (commit.getLineNumber() < nextLineNumber.get()) {
+                                return true;
+                            }
+                            while (commit.getLineNumber() != nextLineNumber.get()) {
+                                try {
+                                    nextRequest.wait(5000);
+                                } catch (InterruptedException ignored) {
+                                }
+                            }
+                            nextLineNumber.incrementAndGet();
+                        }
+                    }
+                    requestNumber = nextRequest.getAndIncrement();
+                    nextRequest.notifyAll();
+                }
+
+                if (log.isDebugEnabled()) {
+                    log.debug("About to launch accept phase on command: " + command);
+                }
+
+                final AtomicBoolean done = new AtomicBoolean(false);
+                final AtomicBoolean success = new AtomicBoolean(false);
                 exec.submit(new Runnable() {
                     @Override
                     public void run() {
@@ -316,14 +352,21 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
     private void onDecide(DecideEvent decide) {
         long requestNumber = decide.getRequestNumber();
         Command command = decide.getCommand();
-        if (ledger.getOutcome(requestNumber) == null) {
-            if (log.isDebugEnabled()) {
-                log.debug("Received DECIDE with request number: " + requestNumber +
-                        " and command: " + command);
+        boolean firstTime = false;
+        synchronized (this) {
+            if (ledger.getOutcome(requestNumber) == null) {
+                if (log.isDebugEnabled()) {
+                    log.debug("Received DECIDE with request number: " + requestNumber +
+                            " and command: " + command);
+                }
+                ledger.logOutcome(requestNumber, command);
+                firstTime = true;
             }
-            ledger.logOutcome(requestNumber, command);
+        }
+        if (firstTime) {
             executeCommands(requestNumber, command);
             onDecision(requestNumber, command);
+            communicator.sendDecide(decide.getBallotNumber(), requestNumber, command);
         }
     }
 
@@ -451,7 +494,10 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                 ledger.logLastTriedBallotNumber(ballotNumber);
                 communicator.sendPrepare(ballotNumber, ledger.getLastExecutedRequest());
                 try {
-                    prepareLock.wait(5000);
+                    if (log.isDebugEnabled()) {
+                        log.debug("Waiting for majority Acks");
+                    }
+                    prepareLock.wait(30000);
                 } catch (InterruptedException ignored) {
                 }
 
@@ -567,9 +613,14 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
         BallotNumber lastTried = ledger.getLastTriedBallotNumber();
         communicator.sendAccept(lastTried, requestNumber, command);
         synchronized (votes) {
-            try {
-                votes.wait(5000);
-            } catch (InterruptedException ignored) {
+            if (!config.isMajority(votes.get())) {
+                try {
+                    if (log.isDebugEnabled()) {
+                        log.debug("Waiting on majority votes");
+                    }
+                    votes.wait(30000);
+                } catch (InterruptedException ignored) {
+                }
             }
         }
 
@@ -579,7 +630,6 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                 log.debug("Request number " + requestNumber + " is fully dealt with");
             }
             onDecide(new DecideEvent(lastTried, requestNumber, command));
-            communicator.sendDecide(lastTried, requestNumber, command);
         } else {
             handleFatalException("Failed to obtain majority consensus", null);
         }
@@ -587,34 +637,34 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
 
     public void onAppendNotification(String transactionId) {
         if (leader.isLocal()) {
-            synchronized (pendingTransactions) {
+            if (log.isDebugEnabled()) {
+                log.debug("Received prepare notification for " + transactionId);
+            }
+
+            synchronized (transactionId.intern()) {
                 pendingTransactions.add(transactionId);
-                pendingTransactions.notifyAll();
+                transactionId.intern().notifyAll();
             }
 
-            if (pendingTransactions.contains(transactionId)) {
-                synchronized (transactionId.intern()) {
+            for (int i = 0; i < 30; i++) {
+                if (pendingTransactions.contains(transactionId)) {
+                    if (i % 10 == 0 && log.isDebugEnabled()) {
+                        log.debug("Waiting for transaction " + transactionId + " to get removed");
+                    }
                     try {
-                        transactionId.intern().wait(30000);
+                        Thread.sleep(1000);
                     } catch (InterruptedException ignored) {
                     }
+                } else {
+                    return;
                 }
-                pendingTransactions.remove(transactionId);
             }
+            log.warn("Timeout expired for transaction " + transactionId);
+            pendingTransactions.remove(transactionId);
         } else {
-            while (true) {
-                try {
-                    communicator.notifyPrepare(transactionId, leader);
-                    break;
-                } catch (Exception e) {
-                    log.error("Error while relaying the append notification to leader - Retrying", e);
-                    try {
-                        Thread.sleep(2000);
-                    } catch (InterruptedException ignored) {
-                    }
-                }
-
-            }
+            String msg = "Append notification received at non-leader node";
+            log.error(msg);
+            throw new WrenchException(msg);
         }
     }
 
