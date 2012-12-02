@@ -28,14 +28,26 @@ public class PaxosLedger {
 
     private BallotNumber lastTried;
     private BallotNumber nextBal;
-    private LRUCache<Long,BallotNumber> prevBal = new LRUCache<Long, BallotNumber>(10);
-    private LRUCache<Long,Command> outcome = new LRUCache<Long, Command>(10);
+    private LRUCache<Long,BallotNumber> prevBal = new LRUCache<Long, BallotNumber>(100);
+    private LRUCache<Long,Command> outcome = new LRUCache<Long, Command>(10000);
     private long lastExecuted = 0;
 
     public PaxosLedger() throws IOException {
         WrenchConfiguration config = WrenchConfiguration.getConfiguration();
         ledgerFile = new File(config.getWrenchHome(), config.getLedgerPath());
         FileUtils.touch(ledgerFile);
+
+        ListIterator<String> iterator = listIterator();
+        while (iterator.hasPrevious()) {
+            String line = iterator.previous();
+            if (line.startsWith(OUTCOME)) {
+                String command = line.substring(line.indexOf('[') + 1,
+                        line.lastIndexOf(']'));
+                long requestNumber = Integer.parseInt(line.split(" ")[1]);
+                Command cmd = CommandFactory.createCommand(command);
+                outcome.put(requestNumber, cmd);
+            }
+        }
     }
 
     public void logLastTriedBallotNumber(BallotNumber bal) {
@@ -138,22 +150,7 @@ public class PaxosLedger {
     }
 
     public Command getOutcome(long requestNumber) {
-        Command o = outcome.get(requestNumber);
-        if (o != null) {
-            return o;
-        } else {
-            ListIterator<String> iterator = listIterator();
-            while (iterator.hasPrevious()) {
-                String line = iterator.previous();
-                if (line.startsWith(OUTCOME + requestNumber + " [")) {
-                    String command = line.substring(line.indexOf('[') + 1,
-                            line.lastIndexOf(']'));
-                    o = CommandFactory.createCommand(command);
-                    outcome.put(requestNumber, o);
-                }
-            }
-        }
-        return o;
+        return outcome.get(requestNumber);
     }
 
     public long getLastExecutedRequest() {

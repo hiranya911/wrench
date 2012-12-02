@@ -54,7 +54,7 @@ public class StatisticsDataServer extends ZKPaxosAgent {
                             }
                             executeClientRequest(new TxCommitCommand(prepare.getTransactionId()));
                         } else {
-                            String msg = "Never heard of transaction from the other cluster: " + prepare.getTransactionId();
+                            String msg = "Never heard of transaction from the Grades cluster: " + prepare.getTransactionId();
                             log.error(msg);
                             throw new WrenchException(msg);
                         }

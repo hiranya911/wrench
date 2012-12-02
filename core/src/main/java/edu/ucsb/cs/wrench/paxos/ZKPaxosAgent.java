@@ -656,6 +656,9 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                     } catch (InterruptedException ignored) {
                     }
                 } else {
+                    if (log.isDebugEnabled()) {
+                        log.debug("Transaction " + transactionId + " has been processed");
+                    }
                     return;
                 }
             }
