@@ -4,11 +4,13 @@ import edu.ucsb.cs.wrench.commands.Command;
 import edu.ucsb.cs.wrench.commands.TxCommitCommand;
 import edu.ucsb.cs.wrench.commands.TxPrepareCommand;
 import edu.ucsb.cs.wrench.config.Member;
-import edu.ucsb.cs.wrench.config.WrenchConfiguration;
 import edu.ucsb.cs.wrench.paxos.DatabaseSnapshot;
 import edu.ucsb.cs.wrench.paxos.ZKPaxosAgent;
 
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class StatisticsDataServer extends ZKPaxosAgent {
 
@@ -23,64 +25,69 @@ public class StatisticsDataServer extends ZKPaxosAgent {
         server.start();
     }
 
+    protected final Set<String> pendingTransactions = Collections.synchronizedSet(new HashSet<String>());
+
     public StatisticsDataServer() {
-        WrenchConfiguration.getConfiguration().setDataFileName("STATS.txt");
+        config.setDataFileName("STATS.txt");
     }
 
     @Override
     public void onDecision(long requestNumber, Command command) {
+        if (!leader.isLocal()) {
+            return;
+        }
         if (command instanceof TxPrepareCommand) {
-            if (!leader.isLocal()) {
-                return;
-            }
             final TxPrepareCommand prepare = (TxPrepareCommand) command;
             exec.submit(new Runnable() {
                 @Override
                 public void run() {
-                    synchronized (prepare.getTransactionId().intern()) {
-                        if (!pendingTransactions.contains(prepare.getTransactionId())) {
-                            try {
-                                if (log.isDebugEnabled()) {
-                                    log.debug("Waiting for pending tx to arrive: " + prepare.getTransactionId());
-                                }
-                                prepare.getTransactionId().intern().wait(10000);
-                            } catch (InterruptedException ignored) {
-                            }
-                        }
-
-                        if (pendingTransactions.remove(prepare.getTransactionId())) {
-                            if (log.isDebugEnabled()) {
-                                log.debug("Found the transaction: " + prepare.getTransactionId());
-                            }
-                            executeClientRequest(new TxCommitCommand(prepare.getTransactionId()));
-                        } else {
-                            String msg = "Never heard of transaction from the Grades cluster: " + prepare.getTransactionId();
-                            log.error(msg);
-                            throw new WrenchException(msg);
-                        }
-
-                    }
+                    executeClientRequest(new TxCommitCommand(prepare.getTransactionId()));
                 }
             });
         } else if (command instanceof TxCommitCommand) {
             TxCommitCommand commit = (TxCommitCommand) command;
             while (true) {
-                for (Member peer : WrenchConfiguration.getConfiguration().getPeers()) {
+                for (Member peer : config.getPeers()) {
                     try {
                         boolean done = communicator.notifyCommit(commit.getTransactionId(),
                                 commit.getLineNumber(), peer);
                         if (done) {
                             if (log.isDebugEnabled()) {
-                                log.info("Notified peer: " + peer.getProcessId() + " about COMMIT " +
+                                log.debug("Notified peer: " + peer.getProcessId() + " about COMMIT " +
                                         commit.getTransactionId());
                             }
+                            pendingTransactions.remove(commit.getTransactionId());
                             return;
                         }
                     } catch (WrenchException e) {
-                        log.error("Error while contacting remote peer", e);
+                        if (log.isDebugEnabled()) {
+                            log.debug("Error while contacting remote peer " + peer.getProcessId(), e);
+                        }
                     }
                 }
             }
+        }
+    }
+
+    @Override
+    public boolean executeClientRequest(Command command) {
+        if (leader.isLocal() && command instanceof TxPrepareCommand) {
+            if (!pendingTransactions.contains(command.getTransactionId())) {
+                return false;
+            }
+        }
+        return super.executeClientRequest(command);
+    }
+
+    public void onAppendNotification(String transactionId) {
+        if (log.isDebugEnabled()) {
+            log.debug("Received prepare notification for " + transactionId);
+        }
+
+        if (leader.isLocal()) {
+            pendingTransactions.add(transactionId);
+        } else {
+            communicator.notifyPrepare(transactionId, leader);
         }
     }
 

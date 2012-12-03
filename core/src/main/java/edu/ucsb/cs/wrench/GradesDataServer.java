@@ -1,13 +1,13 @@
 package edu.ucsb.cs.wrench;
 
 import edu.ucsb.cs.wrench.commands.Command;
+import edu.ucsb.cs.wrench.commands.TxCommitCommand;
 import edu.ucsb.cs.wrench.commands.TxPrepareCommand;
 import edu.ucsb.cs.wrench.config.Member;
 import edu.ucsb.cs.wrench.paxos.DatabaseSnapshot;
 import edu.ucsb.cs.wrench.paxos.ZKPaxosAgent;
 
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class GradesDataServer extends ZKPaxosAgent {
 
@@ -28,52 +28,31 @@ public class GradesDataServer extends ZKPaxosAgent {
 
     @Override
     public void onDecision(long requestNumber, Command command) {
-        if (!leader.isLocal()) {
-            return;
-        }
-        if (command instanceof TxPrepareCommand) {
-            final TxPrepareCommand prepare = (TxPrepareCommand) command;
-            exec.submit(new Runnable() {
-                @Override
-                public void run() {
-                    for (int i = 0; i < 3; i++) {
-                        try {
-                            if (peerLeader == null) {
-                                initPeerLeader();
-                            }
-                            communicator.notifyPrepare(prepare.getTransactionId(), peerLeader);
-                            if (log.isDebugEnabled()) {
-                                log.debug("Notified peer: " + peerLeader.getProcessId() +
-                                        " about PREPARE " + prepare.getTransactionId());
-                            }
-                            return;
-                        } catch (WrenchException e) {
-                            initPeerLeader();
+        if (leader.isLocal() && command instanceof TxPrepareCommand) {
+            TxPrepareCommand prepare = (TxPrepareCommand) command;
+            while (true) {
+                for (Member peer : config.getPeers()) {
+                    try {
+                        communicator.notifyPrepare(prepare.getTransactionId(), peer);
+                        return;
+                    } catch (WrenchException e) {
+                        if (log.isDebugEnabled()) {
+                            log.debug("Error notifying peer " + peer.getProcessId() +
+                                    " about transaction " + prepare.getTransactionId(), e);
                         }
                     }
                 }
-            });
+            }
         }
     }
 
-    private volatile Member peerLeader = null;
-
-    private void initPeerLeader() {
-        if (log.isDebugEnabled()) {
-            log.debug("Starting peer leader discovery");
-        }
-        for (int i = 0; i < 3; i++) {
-            for (Member peer : config.getPeers()) {
-                if (communicator.sendLeaderQueryMessage(peer)) {
-                    peerLeader = peer;
-                    return;
-                }
-            }
-            try {
-                log.info("Unable to locate peer leader - Retrying in 2 seconds");
-                Thread.sleep(2000);
-            } catch (InterruptedException ignored) {
-            }
+    public boolean onAppendCommit(String transactionId, long lineNumber) {
+        if (leader.isLocal()) {
+            TxCommitCommand commit = new TxCommitCommand(transactionId);
+            commit.setLineNumber(lineNumber);
+            return executeClientRequest(commit);
+        } else {
+            return communicator.notifyCommit(transactionId, lineNumber, leader);
         }
     }
 

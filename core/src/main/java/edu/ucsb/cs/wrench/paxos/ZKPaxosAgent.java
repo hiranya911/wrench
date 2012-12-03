@@ -28,7 +28,6 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -59,7 +58,6 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
     private final AtomicLong nextRequest = new AtomicLong(1);
     private AtomicLong nextLineNumber = new AtomicLong(1);
     private boolean acceptRequests = false;
-    protected final Set<String> pendingTransactions = Collections.synchronizedSet(new HashSet<String>());
 
     public void start() {
         Properties properties = new Properties();
@@ -116,8 +114,6 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
             }
         }
 
-
-
         // Start the Paxos event processor
         paxosTask = exec.submit(paxosWorker);
 
@@ -160,7 +156,8 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
     public boolean executeClientRequest(final Command command) {
         while (true) {
             synchronized (stateMachineLock) {
-                while ((agentMode != PaxosAgentMode.COHORT && agentMode != PaxosAgentMode.LEADER) || !acceptRequests) {
+                while ((agentMode != PaxosAgentMode.COHORT &&
+                        agentMode != PaxosAgentMode.LEADER) || !acceptRequests) {
                     try {
                         if (log.isDebugEnabled()) {
                             log.debug("Waiting for state machine to stabilize");
@@ -171,20 +168,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                 }
             }
 
-            if (leader.isLocal()) {
-                synchronized (stateMachineLock) {
-                    while ((agentMode != PaxosAgentMode.COHORT &&
-                            agentMode != PaxosAgentMode.LEADER) || !acceptRequests) {
-                        try {
-                            if (log.isDebugEnabled()) {
-                                log.debug("Waiting for leader's state machine to stabilize");
-                            }
-                            stateMachineLock.wait(5000);
-                        } catch (InterruptedException ignored) {
-                        }
-                    }
-                }
-
+            if (agentMode == PaxosAgentMode.LEADER) {
                 if (log.isDebugEnabled()) {
                     log.debug("About to schedule new command: " + command);
                 }
@@ -209,9 +193,6 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                                 log.debug("Next line number is: " + nextLineNumber.get());
                             }
 
-                            if (commit.getLineNumber() < nextLineNumber.get()) {
-                                return true;
-                            }
                             while (commit.getLineNumber() != nextLineNumber.get()) {
                                 try {
                                     nextRequest.wait(5000);
@@ -229,34 +210,26 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                     log.debug("About to launch accept phase on command: " + command);
                 }
 
-                final AtomicBoolean done = new AtomicBoolean(false);
-                final AtomicBoolean success = new AtomicBoolean(false);
-                exec.submit(new Runnable() {
+                Future acceptTask = exec.submit(new Runnable() {
                     @Override
                     public void run() {
-                        try {
-                            runAcceptPhase(requestNumber, command);
-                            success.compareAndSet(false, true);
-                        } catch (Exception e) {
-                            log.error("Error while running accept phase on: " + command, e);
-                        } finally {
-                            done.compareAndSet(false, true);
-                        }
+                        runAcceptPhase(requestNumber, command);
                     }
                 });
                 if (log.isDebugEnabled()) {
                     log.debug("Submitted request number: " + requestNumber);
                 }
 
-                while (!done.get()) {
-                    try {
-                        Thread.sleep(50);
-                    } catch (InterruptedException ignored) {
-                    }
+                try {
+                    acceptTask.get();
+                    return true;
+                } catch (InterruptedException ignored) {
+                } catch (ExecutionException e) {
+                    log.error("Error while running the accept phase on " + command, e);
+                    return false;
                 }
 
-                return success.get();
-            } else {
+            } else if (agentMode == PaxosAgentMode.COHORT) {
                 if (log.isDebugEnabled()) {
                     log.debug("Relaying the request to: " + leader.getProcessId());
                 }
@@ -309,8 +282,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
         BallotNumber ballotNumber = accept.getBallotNumber();
         long requestNumber = accept.getRequestNumber();
         Command command = accept.getCommand();
-        if (ballotNumber.equals(ledger.getNextBallotNumber()) &&
-                ballotNumber.compareTo(ledger.getPreviousBallotNumber(requestNumber)) > 0) {
+        if (ballotNumber.equals(ledger.getNextBallotNumber())) {
             if (log.isDebugEnabled()) {
                 log.debug("Received ACCEPT with the expected ballot: " + ballotNumber);
             }
@@ -350,8 +322,9 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
     }
 
     private void onDecide(DecideEvent decide) {
-        long requestNumber = decide.getRequestNumber();
-        Command command = decide.getCommand();
+        final long requestNumber = decide.getRequestNumber();
+        final Command command = decide.getCommand();
+        final BallotNumber ballotNumber = decide.getBallotNumber();
         boolean firstTime = false;
         synchronized (this) {
             if (ledger.getOutcome(requestNumber) == null) {
@@ -366,7 +339,12 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
         if (firstTime) {
             executeCommands(requestNumber, command);
             onDecision(requestNumber, command);
-            communicator.sendDecide(decide.getBallotNumber(), requestNumber, command);
+            exec.submit(new Runnable() {
+                @Override
+                public void run() {
+                    communicator.sendDecide(ballotNumber, requestNumber, command);
+                }
+            });
         }
     }
 
@@ -385,7 +363,7 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
                 } else {
                     log.fatal("Failed to execute command: " + cmd + " - Retrying");
                     try {
-                        Thread.sleep(1000);
+                        Thread.sleep(2000);
                     } catch (InterruptedException ignored) {
                     }
                 }
@@ -632,52 +610,6 @@ public abstract class ZKPaxosAgent implements Watcher, AsyncCallback.ChildrenCal
             onDecide(new DecideEvent(lastTried, requestNumber, command));
         } else {
             handleFatalException("Failed to obtain majority consensus", null);
-        }
-    }
-
-    public void onAppendNotification(String transactionId) {
-        if (leader.isLocal()) {
-            if (log.isDebugEnabled()) {
-                log.debug("Received prepare notification for " + transactionId);
-            }
-
-            synchronized (transactionId.intern()) {
-                pendingTransactions.add(transactionId);
-                transactionId.intern().notifyAll();
-            }
-
-            for (int i = 0; i < 30; i++) {
-                if (pendingTransactions.contains(transactionId)) {
-                    if (i % 10 == 0 && log.isDebugEnabled()) {
-                        log.debug("Waiting for transaction " + transactionId + " to get removed");
-                    }
-                    try {
-                        Thread.sleep(1000);
-                    } catch (InterruptedException ignored) {
-                    }
-                } else {
-                    if (log.isDebugEnabled()) {
-                        log.debug("Transaction " + transactionId + " has been processed");
-                    }
-                    return;
-                }
-            }
-            log.warn("Timeout expired for transaction " + transactionId);
-            pendingTransactions.remove(transactionId);
-        } else {
-            String msg = "Append notification received at non-leader node";
-            log.error(msg);
-            throw new WrenchException(msg);
-        }
-    }
-
-    public boolean onAppendCommit(String transactionId, long lineNumber) {
-        if (leader.isLocal()) {
-            TxCommitCommand commit = new TxCommitCommand(transactionId);
-            commit.setLineNumber(lineNumber);
-            return executeClientRequest(commit);
-        } else {
-            return communicator.notifyCommit(transactionId, lineNumber, leader);
         }
     }
 

@@ -193,7 +193,7 @@ public class WrenchClient {
                 System.out.flush();
                 return;
             } catch (Exception e) {
-                log("Error contacting member: " + member.getProcessId(), false);
+                log("Error contacting member: " + member.getProcessId() + " " + e.getMessage(), false);
             } finally {
                 transport.close();
             }
@@ -252,19 +252,27 @@ public class WrenchClient {
 
     private static boolean append(int[] data) {
         String transactionId = UUID.randomUUID().toString();
-        if (sendToGrades(transactionId, data)) {
-            boolean committed = sendToStats(transactionId, data);
-            if (committed) {
-                log("Transaction " + transactionId + " completed", false);
-                return true;
+        for (int i = 0; i < 10; i++) {
+            if (sendToGrades(transactionId, data)) {
+                boolean committed = sendToStats(transactionId, data);
+                if (committed) {
+                    log("Transaction " + transactionId + " completed", false);
+                    return true;
+                } else {
+                    log("Transaction " + transactionId + " failed at stats - Possible 2pc " +
+                            "coord fail-over - Restarting the transaction", false);
+                    try {
+                        Thread.sleep(2000);
+                    } catch (InterruptedException ignored) {
+                    }
+                }
             } else {
-                log("Transaction " + transactionId + " failed at stats", true);
+                log("Transaction " + transactionId + " failed at grades", true);
                 return false;
             }
-        } else {
-            log("Transaction " + transactionId + " failed at grades", true);
-            return false;
         }
+        log("Transaction " + transactionId + " could not be completed", true);
+        return false;
     }
 
     private static void log(String msg, boolean error) {
@@ -274,21 +282,21 @@ public class WrenchClient {
     }
 
     private static boolean sendToGrades(String transactionId, int[] data) {
+        String dataString = "";
+        for (int d : data) {
+            dataString += d + " ";
+        }
         for (Member member : gradeServers) {
             TTransport transport = new TSocket(member.getHostname(), member.getPort());
             try {
                 transport.open();
                 TProtocol protocol = new TBinaryProtocol(transport);
                 WrenchManagementService.Client client = new WrenchManagementService.Client(protocol);
-                String dataString = "";
-                for (int d : data) {
-                    dataString += d + " ";
-                }
                 if (client.append(transactionId, dataString.trim())) {
                     return true;
                 }
             } catch (Exception e) {
-                System.out.println("Error contacting member: " + member.getProcessId());
+                log("Error contacting member: " + member.getProcessId() + " " + e.getMessage(), false);
             } finally {
                 transport.close();
             }
@@ -297,30 +305,31 @@ public class WrenchClient {
     }
 
     private static boolean sendToStats(String transactionId, int[] data) {
+        int min = Integer.MAX_VALUE;
+        int max = Integer.MIN_VALUE;
+        double sum = 0D;
+        for (int d : data) {
+            if (d < min) {
+                min = d;
+            }
+            if (d > max) {
+                max = d;
+            }
+            sum += d;
+        }
+        String dataString = min + " " + max + " " + sum/data.length;
+
         for (Member member : statServers) {
             TTransport transport = new TSocket(member.getHostname(), member.getPort());
             try {
                 transport.open();
                 TProtocol protocol = new TBinaryProtocol(transport);
-                int min = Integer.MAX_VALUE;
-                int max = Integer.MIN_VALUE;
-                double sum = 0D;
-                for (int d : data) {
-                    if (d < min) {
-                        min = d;
-                    }
-                    if (d > max) {
-                        max = d;
-                    }
-                    sum += d;
-                }
-                String dataString = min + " " + max + " " + sum/data.length;
                 WrenchManagementService.Client client = new WrenchManagementService.Client(protocol);
                 if (client.append(transactionId, dataString)) {
                     return true;
                 }
             } catch (Exception e) {
-                System.out.println("Error contacting member: " + member.getProcessId());
+                log("Error contacting member: " + member.getProcessId() + " " + e.getMessage(), false);
             } finally {
                 transport.close();
             }

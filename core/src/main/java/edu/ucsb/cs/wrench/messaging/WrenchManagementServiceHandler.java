@@ -1,5 +1,8 @@
 package edu.ucsb.cs.wrench.messaging;
 
+import edu.ucsb.cs.wrench.GradesDataServer;
+import edu.ucsb.cs.wrench.StatisticsDataServer;
+import edu.ucsb.cs.wrench.WrenchException;
 import edu.ucsb.cs.wrench.commands.Command;
 import edu.ucsb.cs.wrench.commands.CommandFactory;
 import edu.ucsb.cs.wrench.commands.TxPrepareCommand;
@@ -91,12 +94,18 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
 
     @Override
     public void notifyPrepare(String transactionId) throws TException {
-        agent.onAppendNotification(transactionId);
+        if (agent instanceof StatisticsDataServer) {
+            ((StatisticsDataServer) agent).onAppendNotification(transactionId);
+        }
     }
 
     @Override
     public boolean notifyCommit(String transactionId, long lineNumber) throws TException {
-        return agent.onAppendCommit(transactionId, lineNumber);
+        if (agent instanceof GradesDataServer) {
+            return ((GradesDataServer) agent).onAppendCommit(transactionId, lineNumber);
+        } else {
+            throw new WrenchException("Operation not supported by " + agent.getClass().getName());
+        }
     }
 
     @Override
@@ -129,11 +138,8 @@ public class WrenchManagementServiceHandler implements WrenchManagementService.I
 
     @Override
     public List<String> getLines(int lineCount) throws TException {
-        String[] lines = agent.getLines(lineCount);
         List<String> output = new ArrayList<String>();
-        for (String line : lines) {
-            output.add(line);
-        }
+        Collections.addAll(output, agent.getLines(lineCount));
         return output;
     }
 

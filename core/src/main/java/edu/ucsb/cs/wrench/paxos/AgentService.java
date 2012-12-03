@@ -21,10 +21,6 @@ public interface AgentService {
 
     public BallotNumber getNextBallotNumber();
 
-    public void onAppendNotification(String transactionId);
-
-    public boolean onAppendCommit(String transactionId, long lineNumber);
-
     public DatabaseSnapshot readSnapshot();
 
     public String[] getLines(int lineCount);
