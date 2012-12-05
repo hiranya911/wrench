@@ -251,8 +251,8 @@ public class WrenchClient {
     }
 
     private static boolean append(int[] data) {
-        String transactionId = UUID.randomUUID().toString();
         for (int i = 0; i < 10; i++) {
+            String transactionId = UUID.randomUUID().toString();
             if (sendToGrades(transactionId, data)) {
                 boolean committed = sendToStats(transactionId, data);
                 if (committed) {
@@ -271,7 +271,6 @@ public class WrenchClient {
                 return false;
             }
         }
-        log("Transaction " + transactionId + " could not be completed", true);
         return false;
     }
 
